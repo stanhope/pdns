@@ -427,6 +427,10 @@ try {
 
       uint16_t addRoom = 0;
       DNSResponse dr(&ids->qname, ids->qtype, ids->qclass, &ids->origDest, &ids->origRemote, dh, sizeof(packet), responseLen, false, &ids->sentTime.d_start);
+
+      //// fprintf(stdout, "UDP dnsResponse %lu %d\n", sizeof(packet), responseLen); //, &ids->qname.toString().c_str());
+
+
 #ifdef HAVE_PROTOBUF
       dr.uniqueId = ids->uniqueId;
 #endif
@@ -982,6 +986,7 @@ static ssize_t udpClientSendRequestToBackend(DownstreamState* ss, const int sd, 
     result = send(sd, request, requestLen, 0);
   }
   else {
+    fprintf(stdout, "udpClientSend as message\n");
     struct msghdr msgh;
     struct iovec iov;
     char cbuf[256];
@@ -1002,6 +1007,59 @@ static ssize_t udpClientSendRequestToBackend(DownstreamState* ss, const int sd, 
   }
 
   return result;
+}
+
+static double current_time(void) {
+	struct timeval tv;
+	if (gettimeofday(&tv, 0) < 0 )
+		return 0;
+	double now = tv.tv_sec + tv.tv_usec / 1e6;
+	return now;
+}
+
+#define HEXDUMP_COLS 16
+void hexdump(void *mem, unsigned int len)
+{
+  unsigned int i, j;
+  for(i = 0; i < len + ((len % HEXDUMP_COLS) ? (HEXDUMP_COLS - len % HEXDUMP_COLS) : 0); i++)
+    {
+      /* print offset */
+      if(i % HEXDUMP_COLS == 0)
+	{
+	  printf("0x%06x: ", i);
+	}
+
+      /* print hex data */
+      if(i < len)
+	{
+	  printf("%02x ", 0xFF & ((char*)mem)[i]);
+	}
+      else /* end of block, just aligning for ASCII dump */
+	{
+	  printf("   ");
+	}
+
+      /* print ASCII dump */
+      if(i % HEXDUMP_COLS == (HEXDUMP_COLS - 1))
+	{
+	  for(j = i - (HEXDUMP_COLS - 1); j <= i; j++)
+	    {
+	      if(j >= len) /* end of block, not really printing */
+		{
+		  putchar(' ');
+		}
+	      else if(isprint(((char*)mem)[j])) /* printable char */
+		{
+		  putchar(0xFF & ((char*)mem)[j]);
+		}
+	      else /* other char */
+		{
+		  putchar('.');
+		}
+	    }
+	  putchar('\n');
+	}
+    }
 }
 
 // listens to incoming queries, sends out to downstream servers, noting the intended return path 
@@ -1097,6 +1155,14 @@ try
         len = decryptedQueryLen;
       }
 #endif
+
+      if ((int)query[0] == -1) {
+	  char PROXY_INFO[64];
+	  memcpy(PROXY_INFO, query, query[1]);
+	  PROXY_INFO[(int)(query[1])] = 0;
+	  fprintf(stdout, "UDP query w/ proxy info len:%d => %s\n", (int)query[1], PROXY_INFO);
+	  query += (query[1] + 2);
+      }
 
       struct dnsheader* dh = (struct dnsheader*) query;
       queryId = ntohs(dh->id);
@@ -1226,9 +1292,7 @@ try
 #endif
           sendUDPResponse(cs->udpFD, response, responseLen, 0, dest, remote);
         }
-        vinfolog("Dropped query for %s|%s from %s, no policy applied", dq.qname->toString(), QType(dq.qtype).getName(), remote.toStringWithPort());
         continue;
-
       }
 
       ss->queries++;
@@ -1283,10 +1347,47 @@ try
 
       dh->id = idOffset;
 
+      char SRC[40];
+      char PORT[10];
+      char DST[40];
+      const char* src_addr = remote.toString().c_str();
+      strcpy(SRC, src_addr);
+      strcpy(PORT, std::to_string(ntohs(remote.sin4.sin_port)).c_str());
+      const char* dst_addr = dest.toString().c_str();
+      strcpy(DST, dst_addr);
+      
+      //// fprintf(stdout, "UDP query from: %s %s %s\n", SRC, PORT, DST);
+
       if (largerQuery.empty()) {
-        ret = udpClientSendRequestToBackend(ss, ss->fd, query, dq.len);
+
+	  const char* fqdn = qname.toString().c_str();
+	  if (strstr(fqdn, "a.root-servers.net") == NULL) {
+	      //// fprintf(stdout, "UDP Sending DNS PROXY query %s len:%d\n", fqdn, dq.len);
+	      //// Simulate PROXY INFO
+	      double now = current_time();
+	      char PROXY_INFO[64];
+	      sprintf(PROXY_INFO, "%.3f %s %s %s", now, SRC, PORT, DST);
+
+	      char *BUFF = (char*)malloc(256);
+	      int PROXY_INFO_LEN = strlen(PROXY_INFO);
+	      //// fprintf(stdout, " PROXY_INFO %s len:%d ql:%d total:%d\n", PROXY_INFO, PROXY_INFO_LEN, dq.len, PROXY_INFO_LEN+dq.len+2);
+	      sprintf(BUFF+2,"%s", PROXY_INFO);
+	      BUFF[0] = 0xFF;
+	      BUFF[1] = PROXY_INFO_LEN;
+	      memcpy(BUFF+(PROXY_INFO_LEN+2), query, dq.len);
+
+	      //// fprintf(stdout, "PROY + QUERY\n");
+	      //// hexdump(BUFF, dq.len+PROXY_INFO_LEN+2);
+	      // ret = send(ss->fd, BUFF, dq.len+PROXY_INFO_LEN+2, 0);
+	      ret = udpClientSendRequestToBackend(ss, ss->fd, BUFF, dq.len+PROXY_INFO_LEN+2);
+	      free(BUFF);
+	      //// ret = udpClientSendRequestToBackend(ss, ss->fd, query, dq.len);
+	  } else {
+	      ret = udpClientSendRequestToBackend(ss, ss->fd, query, dq.len);
+	  }
       }
       else {
+	  fprintf(stdout, "sending large request len:%lu\n", largerQuery.size());
         ret = udpClientSendRequestToBackend(ss, ss->fd, largerQuery.c_str(), largerQuery.size());
         largerQuery.clear();
       }
@@ -1296,7 +1397,7 @@ try
 	g_stats.downstreamSendErrors++;
       }
 
-      vinfolog("Got query for %s|%s from %s, relayed to %s", ids->qname.toString(), QType(ids->qtype).getName(), remote.toStringWithPort(), ss->getName());
+      vinfolog("Got query from %s, relayed to %s", remote.toStringWithPort(), ss->getName());
     }
     catch(std::exception& e){
       vinfolog("Got an error in UDP question thread while parsing a query from %s, id %d: %s", remote.toStringWithPort(), queryId, e.what());
@@ -1535,9 +1636,6 @@ void* healthChecksThread()
           dss->reuseds++;
           --dss->outstanding;
           g_stats.downstreamTimeouts++; // this is an 'actively' discovered timeout
-          vinfolog("Had a downstream timeout from %s (%s) for query for %s|%s from %s",
-                   dss->remote.toStringWithPort(), dss->name,
-                   ids.qname.toString(), QType(ids.qtype).getName(), ids.origRemote.toStringWithPort());
 
           struct timespec ts;
           gettime(&ts);
@@ -1679,6 +1777,9 @@ struct
   string pidfile;
   string command;
   string config;
+#ifdef HAVE_LIBSODIUM
+  string setKey;
+#endif
   string uid;
   string gid;
 } g_cmdLine;
@@ -1810,7 +1911,7 @@ try
       break;
 #ifdef HAVE_LIBSODIUM
     case 'k':
-      if (B64Decode(string(optarg), g_key) < 0) {
+      if (B64Decode(string(optarg), g_cmdLine.setKey) < 0) {
         cerr<<"Unable to decode key '"<<optarg<<"'."<<endl;
         exit(EXIT_FAILURE);
       }
@@ -1876,6 +1977,10 @@ try
     setupLua(true, g_cmdLine.config);
     if (clientAddress != ComboAddress())
       g_serverControl = clientAddress;
+#ifdef HAVE_LIBSODIUM
+    if (!g_cmdLine.setKey.empty())
+      g_key = g_cmdLine.setKey;
+#endif
     doClient(g_serverControl, g_cmdLine.command);
     _exit(EXIT_SUCCESS);
   }
@@ -2177,19 +2282,6 @@ try
   }
   _exit(EXIT_SUCCESS);
 
-}
-catch(const LuaContext::ExecutionErrorException& e) {
-  try {
-    errlog("Fatal Lua error: %s", e.what());
-    std::rethrow_if_nested(e);
-  } catch(const std::exception& e) {
-    errlog("Details: %s", e.what());
-  }
-  catch(PDNSException &ae)
-  {
-    errlog("Fatal pdns error: %s", ae.reason);
-  }
-  _exit(EXIT_FAILURE);
 }
 catch(std::exception &e)
 {

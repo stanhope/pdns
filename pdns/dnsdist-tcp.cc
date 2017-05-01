@@ -208,6 +208,16 @@ void cleanupClosedTCPConnections(std::map<ComboAddress,int>& sockets)
   }
 }
 
+static double current_time(void) {
+	struct timeval tv;
+	if (gettimeofday(&tv, 0) < 0 )
+		return 0;
+	double now = tv.tv_sec + tv.tv_usec / 1e6;
+	return now;
+}
+
+extern void hexdump(void *mem, unsigned int len);
+
 std::shared_ptr<TCPClientCollection> g_tcpclientthreads;
 
 void* tcpClientThread(int pipefd)
@@ -327,6 +337,37 @@ void* tcpClientThread(int pipefd)
           qlen = decryptedQueryLen;
         }
 #endif
+
+	char SRC[40];
+	char PORT[10];
+	char DST[40];
+	const char* src_addr = ci.remote.toString().c_str();
+	strcpy(SRC, src_addr);
+	strcpy(PORT, std::to_string(ntohs(ci.remote.sin4.sin_port)).c_str());
+
+	struct sockaddr boundSockAddr;
+	socklen_t lenSockAddr = sizeof(struct sockaddr);
+	if (getsockname(ci.fd, &boundSockAddr, &lenSockAddr) == -1) {
+		fprintf(stdout, "ACCEPT TCP getsockname() failed\n");
+	} else {
+	  if (boundSockAddr.sa_family == AF_INET) {
+	    struct sockaddr_in *sin = (struct sockaddr_in *) &boundSockAddr;
+	    u_char * p = (u_char *) &sin->sin_addr;
+	    sprintf(DST, "%d.%d.%d.%d", p[0], p[1], p[2], p[3]);
+	  } else if (boundSockAddr.sa_family == AF_INET6) {
+	    sprintf(DST, "TODO - DECODE V6");
+	  }
+	}
+
+	//// fprintf(stdout, "TCP query from: %s %s %s\n", SRC, PORT, DST);
+
+	if ((int)query[0] == -1) {
+		char PROXY_INFO[64];
+		memcpy(PROXY_INFO, query+2, query[1]);
+		PROXY_INFO[(int)(query[1])] = 0;
+		query += (query[1] + 2);
+	}
+
         struct dnsheader* dh = (struct dnsheader*) query;
 
         if(dh->qr) {   // don't respond to responses
@@ -411,6 +452,7 @@ void* tcpClientThread(int pipefd)
 #ifdef HAVE_PROTOBUF
             dr.uniqueId = dq.uniqueId;
 #endif
+
             if (!processResponse(localCacheHitRespRulactions, dr, &delayMsec)) {
               goto drop;
             }
@@ -483,7 +525,38 @@ void* tcpClientThread(int pipefd)
             socketFlags |= MSG_FASTOPEN;
           }
 #endif /* MSG_FASTOPEN */
-          sendSizeAndMsgWithTimeout(dsock, dq.len, query, ds->tcpSendTimeout, &ds->remote, &ds->sourceAddr, ds->sourceItf, 0, socketFlags);
+
+          //// sendSizeAndMsgWithTimeout(dsock, dq.len, query, ds->tcpSendTimeout, &ds->remote, &ds->sourceAddr, ds->sourceItf, 0, socketFlags);
+
+	  //// EMIT PROXY INFO
+	  double now = current_time();
+	  char PROXY_INFO[64];
+	  sprintf(PROXY_INFO, "%.3f %s %s %s", now, SRC, PORT, DST);
+	  
+	  char* BUFF = (char*)malloc(256);
+	  int PROXY_INFO_LEN = strlen(PROXY_INFO);
+	  //// fprintf(stdout, " PROXY_INFO '%s' len:%d ql:%d total:%d\n", PROXY_INFO, PROXY_INFO_LEN, dq.len, PROXY_INFO_LEN+dq.len+2);
+	  sprintf(BUFF+2,"%s", PROXY_INFO);
+	  BUFF[0] = 0xFF;
+	  BUFF[1] = PROXY_INFO_LEN;
+
+	  /*
+	  fprintf(stdout, "QUERY\n");
+	  hexdump((void*)query, dq.len);
+
+	  fprintf(stdout, "PROXY LINE\n");
+	  hexdump(BUFF, PROXY_INFO_LEN+2);
+	  */
+
+	  /*
+	  fprintf(stdout, "PROXY + QUERY\n");
+	  memcpy(BUFF+(PROXY_INFO_LEN+2), query, dq.len);
+	  hexdump(BUFF, dq.len+PROXY_INFO_LEN+2);
+	  fprintf(stdout, "TCP Sending DNS PROXY query %s len:%d raw:%d code:%x proxy_len:%d\n", qname.toString().c_str(), dq.len+PROXY_INFO_LEN+2, dq.len, BUFF[0],BUFF[1]);
+	  */
+          sendSizeAndMsgWithTimeout(dsock, dq.len+PROXY_INFO_LEN+2, BUFF, ds->tcpSendTimeout, &ds->remote, &ds->sourceAddr, ds->sourceItf, 0, socketFlags);
+	  free(BUFF);
+
         }
         catch(const runtime_error& e) {
           vinfolog("Downstream connection to %s died on us, getting a new one!", ds->getName());
@@ -555,6 +628,7 @@ void* tcpClientThread(int pipefd)
 #ifdef HAVE_PROTOBUF
         dr.uniqueId = dq.uniqueId;
 #endif
+
         if (!processResponse(localRespRulactions, dr, &delayMsec)) {
           break;
         }
