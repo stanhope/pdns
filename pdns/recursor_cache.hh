@@ -33,11 +33,13 @@
 #undef L
 #include <boost/multi_index_container.hpp>
 #include <boost/multi_index/ordered_index.hpp>
+#include <boost/multi_index/hashed_index.hpp>
 #include <boost/tuple/tuple_comparison.hpp>
 #include <boost/multi_index/key_extractors.hpp>
 #include <boost/multi_index/sequenced_index.hpp>
 #include <boost/version.hpp>
 #include "iputils.hh"
+#include "validate.hh"
 #undef max
 
 #define L theL()
@@ -53,16 +55,18 @@ public:
   }
   unsigned int size();
   unsigned int bytes();
-  int32_t get(time_t, const DNSName &qname, const QType& qt, vector<DNSRecord>* res, const ComboAddress& who, vector<std::shared_ptr<RRSIGRecordContent>>* signatures=0);
+  int32_t get(time_t, const DNSName &qname, const QType& qt, bool requireAuth, vector<DNSRecord>* res, const ComboAddress& who, vector<std::shared_ptr<RRSIGRecordContent>>* signatures=nullptr, std::vector<std::shared_ptr<DNSRecord>>* authorityRecs=nullptr, bool* variable=nullptr, vState* state=nullptr, bool* wasAuth=nullptr);
 
-  void replace(time_t, const DNSName &qname, const QType& qt,  const vector<DNSRecord>& content, const vector<shared_ptr<RRSIGRecordContent>>& signatures, bool auth, boost::optional<Netmask> ednsmask=boost::optional<Netmask>());
+  void replace(time_t, const DNSName &qname, const QType& qt,  const vector<DNSRecord>& content, const vector<shared_ptr<RRSIGRecordContent>>& signatures, const std::vector<std::shared_ptr<DNSRecord>>& authorityRecs, bool auth, boost::optional<Netmask> ednsmask=boost::none, vState state=Indeterminate);
+
   void doPrune(void);
-  void doSlash(int perc);
+  void doPrune(unsigned int keep);
   uint64_t doDump(int fd);
-  uint64_t doDumpNSSpeeds(int fd);
 
   int doWipeCache(const DNSName& name, bool sub, uint16_t qtype=0xffff);
   bool doAgeCache(time_t now, const DNSName& name, uint16_t qtype, uint32_t newTTL);
+  bool updateValidationStatus(time_t now, const DNSName &qname, const QType& qt, const ComboAddress& who, bool requireAuth, vState newState);
+
   uint64_t cacheHits, cacheMisses;
 
 private:
@@ -70,22 +74,73 @@ private:
   struct CacheEntry
   {
     CacheEntry(const boost::tuple<DNSName, uint16_t, Netmask>& key, const vector<shared_ptr<DNSRecordContent>>& records, bool auth) : 
-      d_qname(key.get<0>()), d_qtype(key.get<1>()), d_auth(auth), d_ttd(0), d_records(records), d_netmask(key.get<2>())
+      d_records(records), d_qname(key.get<0>()), d_netmask(key.get<2>()), d_state(Indeterminate), d_ttd(0), d_qtype(key.get<1>()), d_auth(auth)
     {}
 
     typedef vector<std::shared_ptr<DNSRecordContent>> records_t;
-    vector<std::shared_ptr<RRSIGRecordContent>> d_signatures;
     time_t getTTD() const
     {
       return d_ttd;
     }
 
-    DNSName d_qname; 
+    records_t d_records;
+    std::vector<std::shared_ptr<RRSIGRecordContent>> d_signatures;
+    std::vector<std::shared_ptr<DNSRecord>> d_authorityRecs;
+    DNSName d_qname;
+    Netmask d_netmask;
+    mutable vState d_state;
+    time_t d_ttd;
     uint16_t d_qtype;
     bool d_auth;
-    time_t d_ttd;
-    records_t d_records;
-    Netmask d_netmask;
+  };
+
+  /* The ECS Index (d_ecsIndex) keeps track of whether there is any ECS-specific
+     entry for a given (qname,qtype) entry in the cache (d_cache), and if so
+     provides a NetmaskTree of those ECS entries.
+     This allows figuring out quickly if we should look for an entry
+     specific to the requestor IP, and if so which entry is the most
+     specific one.
+     Keeping the entries in the regular cache is currently necessary
+     because of the way we manage expired entries (moving them to the
+     front of the expunge queue to be deleted at a regular interval).
+  */
+  class ECSIndexEntry
+  {
+  public:
+    ECSIndexEntry(const DNSName& qname, uint16_t qtype): d_qname(qname), d_qtype(qtype)
+    {
+    }
+
+    Netmask lookupBestMatch(const ComboAddress& addr) const
+    {
+      Netmask result = Netmask();
+
+      const auto best = d_nmt.lookup(addr);
+      if (best != nullptr) {
+        result = best->first;
+      }
+
+      return result;
+    }
+
+    void addMask(const Netmask& nm) const
+    {
+      d_nmt.insert(nm).second = true;
+    }
+
+    void removeNetmask(const Netmask& nm) const
+    {
+      d_nmt.erase(nm);
+    }
+
+    bool isEmpty() const
+    {
+      return d_nmt.empty();
+    }
+
+    mutable NetmaskTree<bool> d_nmt;
+    DNSName d_qname;
+    uint16_t d_qtype;
   };
 
   typedef multi_index_container<
@@ -103,11 +158,46 @@ private:
                sequenced<>
                >
   > cache_t;
+  typedef multi_index_container<
+    ECSIndexEntry,
+    indexed_by <
+      ordered_unique <
+        composite_key<
+          ECSIndexEntry,
+          member<ECSIndexEntry,DNSName,&ECSIndexEntry::d_qname>,
+          member<ECSIndexEntry,uint16_t,&ECSIndexEntry::d_qtype>
+        >
+      >
+    >
+  > ecsIndex_t;
 
   cache_t d_cache;
+  ecsIndex_t d_ecsIndex;
   pair<cache_t::iterator, cache_t::iterator> d_cachecache;
   DNSName d_cachedqname;
   bool d_cachecachevalid;
+
   bool attemptToRefreshNSTTL(const QType& qt, const vector<DNSRecord>& content, const CacheEntry& stored);
+  bool entryMatches(cache_t::const_iterator& entry, uint16_t qt, bool requireAuth, const ComboAddress& who);
+  std::pair<cache_t::const_iterator, cache_t::const_iterator> getEntries(const DNSName &qname, const QType& qt);
+  cache_t::const_iterator getEntryUsingECSIndex(time_t now, const DNSName &qname, uint16_t qtype, bool requireAuth, const ComboAddress& who);
+  int32_t handleHit(cache_t::iterator entry, const DNSName& qname, const ComboAddress& who, vector<DNSRecord>* res, vector<std::shared_ptr<RRSIGRecordContent>>* signatures, std::vector<std::shared_ptr<DNSRecord>>* authorityRecs, bool* variable, vState* state, bool* wasAuth);
+
+public:
+  void preRemoval(const CacheEntry& entry)
+  {
+    if (entry.d_netmask.empty()) {
+      return;
+    }
+
+    auto key = tie(entry.d_qname, entry.d_qtype);
+    auto ecsIndexEntry = d_ecsIndex.find(key);
+    if (ecsIndexEntry != d_ecsIndex.end()) {
+      ecsIndexEntry->removeNetmask(entry.d_netmask);
+      if (ecsIndexEntry->isEmpty()) {
+        d_ecsIndex.erase(ecsIndexEntry);
+      }
+    }
+  }
 };
 #endif

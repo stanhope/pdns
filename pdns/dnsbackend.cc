@@ -33,9 +33,9 @@
 #include "dnspacket.hh"
 #include "dns.hh"
 
-bool DNSBackend::getAuth(DNSPacket *p, SOAData *sd, const DNSName &target)
+bool DNSBackend::getAuth(const DNSName &target, SOAData *sd)
 {
-  return this->getSOA(target, *sd, p);
+  return this->getSOA(target, *sd);
 }
 
 void DNSBackend::setArgPrefix(const string &prefix)
@@ -214,9 +214,9 @@ vector<DNSBackend *>BackendMakerClass::all(bool metadataOnly)
     \param domain Domain we want to get the SOA details of
     \param sd SOAData which is filled with the SOA details
 */
-bool DNSBackend::getSOA(const DNSName &domain, SOAData &sd, DNSPacket *p)
+bool DNSBackend::getSOA(const DNSName &domain, SOAData &sd)
 {
-  this->lookup(QType(QType::SOA),domain,p);
+  this->lookup(QType(QType::SOA),domain);
 
   DNSResourceRecord rr;
   rr.auth = true;

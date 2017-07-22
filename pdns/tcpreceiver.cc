@@ -365,8 +365,6 @@ void *TCPNameserver::doConnection(void *data)
         cached->d.rd=packet->d.rd; // copy in recursion desired bit 
         cached->commitD(); // commit d to the packet                        inlined
 
-        if(LPE) LPE->police(&(*packet), &(*cached), true);
-
         sendPacket(cached, fd); // presigned, don't do it again
         continue;
       }
@@ -380,8 +378,6 @@ void *TCPNameserver::doConnection(void *data)
         }
 
         reply=shared_ptr<DNSPacket>(s_P->doQuestion(packet.get())); // we really need to ask the backend :-)
-
-        if(LPE) LPE->police(&(*packet), &(*reply), true);
       }
 
       if(!reply)  // unable to write an answer?
@@ -614,7 +610,7 @@ int TCPNameserver::doAXFR(const DNSName &target, shared_ptr<DNSPacket> q, int ou
   NSEC3PARAMRecordContent ns3pr;
   bool narrow;
   bool NSEC3Zone=false;
-  if(dk.getNSEC3PARAM(target, &ns3pr, &narrow)) {
+  if(securedZone && dk.getNSEC3PARAM(target, &ns3pr, &narrow)) {
     NSEC3Zone=true;
     if(narrow) {
       L<<Logger::Error<<"Not doing AXFR of an NSEC3 narrow zone '"<<target<<"' for "<<q->getRemote()<<endl;
@@ -771,6 +767,7 @@ int TCPNameserver::doAXFR(const DNSName &target, shared_ptr<DNSPacket> q, int ou
     zrrs.push_back(synth_zrr);
 
   while(sd.db->get(zrr)) {
+    zrr.dr.d_name.makeUsLowerCase();
     if(zrr.dr.d_name.isPartOf(target)) {
       if (zrr.dr.d_type == QType::ALIAS && ::arg().mustDo("outgoing-axfr-expand-alias")) {
         vector<DNSZoneRecord> ips;
@@ -787,9 +784,7 @@ int TCPNameserver::doAXFR(const DNSName &target, shared_ptr<DNSPacket> q, int ou
           zrr.dr.d_content = ip.dr.d_content;
           zrrs.push_back(zrr);
         }
-      }
-      else {
-        zrrs.push_back(zrr);
+        continue;
       }
 
       if (rectify) {
@@ -802,10 +797,10 @@ int TCPNameserver::doAXFR(const DNSName &target, shared_ptr<DNSPacket> q, int ou
           continue;
         }
       }
+      zrrs.push_back(zrr);
     } else {
       if (zrr.dr.d_type)
         L<<Logger::Warning<<"Zone '"<<target<<"' contains out-of-zone data '"<<zrr.dr.d_name<<"|"<<DNSRecordContent::NumberToType(zrr.dr.d_type)<<"', ignoring"<<endl;
-      continue;
     }
   }
 
@@ -822,12 +817,13 @@ int TCPNameserver::doAXFR(const DNSName &target, shared_ptr<DNSPacket> q, int ou
         DNSName shorter(zrr.dr.d_name);
         do {
           if (shorter==target) // apex is always auth
-            continue;
-          if(nsset.count(shorter) && !(zrr.dr.d_name==shorter && zrr.dr.d_type == QType::DS))
+            break;
+          if(nsset.count(shorter) && !(zrr.dr.d_name==shorter && zrr.dr.d_type == QType::DS)) {
             zrr.auth=false;
+            break;
+          }
         } while(shorter.chopOff());
-      } else
-        continue;
+      }
     }
 
     if(NSEC3Zone) {
@@ -872,7 +868,7 @@ int TCPNameserver::doAXFR(const DNSName &target, shared_ptr<DNSPacket> q, int ou
       for(const auto& nt :  nonterm) {
         DNSZoneRecord zrr;
         zrr.dr.d_name=nt;
-        zrr.dr.d_type=0; // was TYPE0
+        zrr.dr.d_type=QType::ENT;
         zrr.auth=true;
         zrrs.push_back(zrr);
       }

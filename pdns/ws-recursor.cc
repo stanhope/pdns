@@ -40,7 +40,7 @@
 #include "logger.hh"
 #include "ext/incbin/incbin.h"
 
-extern __thread FDMultiplexer* t_fdm;
+extern thread_local FDMultiplexer* t_fdm;
 
 using json11::Json;
 
@@ -116,8 +116,8 @@ static void apiServerConfigAllowFrom(HttpRequest* req, HttpResponse* resp)
 
 static void fillZone(const DNSName& zonename, HttpResponse* resp)
 {
-  auto iter = t_sstorage->domainmap->find(zonename);
-  if (iter == t_sstorage->domainmap->end())
+  auto iter = SyncRes::t_sstorage.domainmap->find(zonename);
+  if (iter == SyncRes::t_sstorage.domainmap->end())
     throw ApiException("Could not find domain '"+zonename.toString()+"'");
 
   const SyncRes::AuthDomain& zone = iter->second;
@@ -251,8 +251,8 @@ static void apiServerZones(HttpRequest* req, HttpResponse* resp)
 
     DNSName zonename = apiNameToDNSName(stringFromJson(document, "name"));
 
-    auto iter = t_sstorage->domainmap->find(zonename);
-    if (iter != t_sstorage->domainmap->end())
+    auto iter = SyncRes::t_sstorage.domainmap->find(zonename);
+    if (iter != SyncRes::t_sstorage.domainmap->end())
       throw ApiException("Zone already exists");
 
     doCreateZone(document);
@@ -266,7 +266,7 @@ static void apiServerZones(HttpRequest* req, HttpResponse* resp)
     throw HttpMethodNotAllowedException();
 
   Json::array doc;
-  for(const SyncRes::domainmap_t::value_type& val :  *t_sstorage->domainmap) {
+  for(const SyncRes::domainmap_t::value_type& val :  *SyncRes::t_sstorage.domainmap) {
     const SyncRes::AuthDomain& zone = val.second;
     Json::array servers;
     for(const ComboAddress& server : zone.d_servers) {
@@ -290,8 +290,8 @@ static void apiServerZoneDetail(HttpRequest* req, HttpResponse* resp)
 {
   DNSName zonename = apiZoneIdToName(req->parameters["id"]);
 
-  SyncRes::domainmap_t::const_iterator iter = t_sstorage->domainmap->find(zonename);
-  if (iter == t_sstorage->domainmap->end())
+  SyncRes::domainmap_t::const_iterator iter = SyncRes::t_sstorage.domainmap->find(zonename);
+  if (iter == SyncRes::t_sstorage.domainmap->end())
     throw ApiException("Could not find domain '"+zonename.toString()+"'");
 
   if(req->method == "PUT" && !::arg().mustDo("api-readonly")) {
@@ -328,7 +328,7 @@ static void apiServerSearchData(HttpRequest* req, HttpResponse* resp) {
     throw ApiException("Query q can't be blank");
 
   Json::array doc;
-  for(const SyncRes::domainmap_t::value_type& val : *t_sstorage->domainmap) {
+  for(const SyncRes::domainmap_t::value_type& val : *SyncRes::t_sstorage.domainmap) {
     string zoneId = apiZoneNameToId(val.first);
     string zoneName = val.first.toString();
     if (pdns_ci_find(zoneName, q) != string::npos) {
@@ -410,7 +410,7 @@ void serveStuff(HttpRequest* req, HttpResponse* resp)
 
 RecursorWebServer::RecursorWebServer(FDMultiplexer* fdm)
 {
-  RecursorControlParser rcp; // inits
+  registerAllStats();
 
   d_ws = new AsyncWebServer(fdm, arg()["webserver-address"], arg().asNum("webserver-port"));
   d_ws->bind();
@@ -557,12 +557,12 @@ void AsyncServer::asyncWaitForConnections(FDMultiplexer* fdm, const newconnectio
 
 void AsyncServer::newConnection()
 {
-  MT->makeThread(&AsyncServerNewConnectionMT, this);
+  getMT()->makeThread(&AsyncServerNewConnectionMT, this);
 }
 
-
+// This is an entry point from FDM, so it needs to catch everything.
 void AsyncWebServer::serveConnection(Socket *client)
-{
+try {
   HttpRequest req;
   YaHTTP::AsyncRequestLoader yarl;
   yarl.initialize(&req);
@@ -571,7 +571,6 @@ void AsyncWebServer::serveConnection(Socket *client)
   string data;
   try {
     while(!req.complete) {
-      data.clear();
       int bytes = arecvtcp(data, 16384, client, true);
       if (bytes > 0) {
         req.complete = yarl.feed(data);
@@ -595,6 +594,16 @@ void AsyncWebServer::serveConnection(Socket *client)
   if (asendtcp(data, client) == -1 || data.empty()) {
     L<<Logger::Error<<"Failed sending reply to HTTP client"<<endl;
   }
+}
+catch(PDNSException &e) {
+  L<<Logger::Error<<"HTTP Exception: "<<e.reason<<endl;
+}
+catch(std::exception &e) {
+  if(strstr(e.what(), "timeout")==0)
+    L<<Logger::Error<<"HTTP STL Exception: "<<e.what()<<endl;
+}
+catch(...) {
+  L<<Logger::Error<<"HTTP: Unknown exception"<<endl;
 }
 
 void AsyncWebServer::go() {

@@ -240,6 +240,11 @@ pdns_server_SOURCES += sodiumsigners.cc
 pdns_server_LDADD += $(LIBSODIUM_LIBS)
 endif
 
+if LIBDECAF
+pdns_server_SOURCES += decafsigners.cc
+pdns_server_LDADD += $(LIBDECAF_LIBS)
+endif
+
 if SQLITE3
 pdns_server_SOURCES += ssqlite3.cc ssqlite3.hh
 pdns_server_LDADD += $(SQLITE3_LIBS)
@@ -332,6 +337,11 @@ endif
 if LIBSODIUM
 pdnsutil_SOURCES += sodiumsigners.cc
 pdnsutil_LDADD += $(LIBSODIUM_LIBS)
+endif
+
+if LIBDECAF
+pdnsutil_SOURCES += decafsigners.cc
+pdnsutil_LDADD += $(LIBDECAF_LIBS)
 endif
 
 if SQLITE3
@@ -489,8 +499,10 @@ calidns_SOURCES = \
 	statbag.cc \
 	unix_utility.cc
 
-calidns_LDADD = $(LIBCRYPTO_LIBS)
-calidns_LDFLAGS = $(AM_LDFLAGS) $(THREADFLAGS) $(LIBCRYPTO_LDFLAGS)
+calidns_LDADD = $(LIBCRYPTO_LIBS) \
+	$(BOOST_PROGRAM_OPTIONS_LIBS)
+calidns_LDFLAGS = $(AM_LDFLAGS) $(THREADFLAGS) $(LIBCRYPTO_LDFLAGS) \
+	$(BOOST_PROGRAM_OPTIONS_LDFLAGS)
 
 dumresp_SOURCES = \
 	dnslabeltext.cc \
@@ -1119,6 +1131,7 @@ testrunner_SOURCES = \
 	base64.cc \
 	bindlexer.l \
 	bindparser.yy \
+	dbdnsseckeeper.cc \
 	dns.cc \
 	dns_random.cc \
 	dnsbackend.cc \
@@ -1129,12 +1142,14 @@ testrunner_SOURCES = \
 	dnsparser.hh dnsparser.cc \
 	dnsrecords.cc \
 	dnssecinfra.cc \
+	dnssecsigner.cc \
 	dnswriter.cc \
 	ednsoptions.cc ednsoptions.hh \
 	ednssubnet.cc \
 	gettime.cc gettime.hh \
 	gss_context.cc gss_context.hh \
 	iputils.cc \
+	ixfr.cc ixfr.hh \
 	logger.cc \
 	misc.cc \
 	nameserver.cc \
@@ -1149,6 +1164,7 @@ testrunner_SOURCES = \
 	test-base32_cc.cc \
 	test-base64_cc.cc \
 	test-bindparser_cc.cc \
+	test-common.hh \
 	test-delaypipe_hh.cc \
 	test-dnsrecordcontent.cc \
 	test-distributor_hh.cc \
@@ -1157,6 +1173,7 @@ testrunner_SOURCES = \
 	test-dnsparser_hh.cc \
 	test-dnsrecords_cc.cc \
 	test-iputils_hh.cc \
+	test-ixfr_cc.cc \
 	test-lock_hh.cc \
 	test-md5_hh.cc \
 	test-misc_hh.cc \
@@ -1164,11 +1181,13 @@ testrunner_SOURCES = \
 	test-nmtree.cc \
 	test-packetcache_cc.cc \
 	test-rcpgenerator_cc.cc \
+	test-signers.cc \
 	test-sha_hh.cc \
 	test-statbag_cc.cc \
 	test-tsig.cc \
 	test-zoneparser_tng_cc.cc \
 	testrunner.cc \
+	tsigverifier.cc tsigverifier.hh \
 	ueberbackend.cc \
 	unix_utility.cc \
 	zoneparser-tng.cc zoneparser-tng.hh
@@ -1187,6 +1206,16 @@ testrunner_LDADD = \
 if PKCS11
 testrunner_SOURCES += pkcs11signers.cc pkcs11signers.hh
 testrunner_LDADD += $(P11KIT1_LIBS)
+endif
+
+if LIBSODIUM
+testrunner_SOURCES += sodiumsigners.cc
+testrunner_LDADD += $(LIBSODIUM_LIBS)
+endif
+
+if LIBDECAF
+testrunner_SOURCES += decafsigners.cc
+testrunner_LDADD += $(LIBDECAF_LIBS)
 endif
 
 pdns_control_SOURCES = \

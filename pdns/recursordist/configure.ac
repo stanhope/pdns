@@ -23,9 +23,7 @@ AC_PROG_CC
 AC_PROG_CXX
 AC_LANG([C++])
 
-AC_DEFINE([_GNU_SOURCE], [1],
-  [Define _GNU_SOURCE so that we get all necessary prototypes]
-)
+AC_GNU_SOURCE
 
 AC_DEFINE([RECURSOR], [1],
   [This is the PowerDNS Recursor]
@@ -117,6 +115,7 @@ PDNS_CHECK_LIBCRYPTO([
 )
 PDNS_CHECK_LIBCRYPTO_ECDSA
 PDNS_CHECK_LIBSODIUM
+PDNS_CHECK_LIBDECAF
 
 PDNS_WITH_NET_SNMP
 
@@ -125,6 +124,8 @@ PDNS_CHECK_RAGEL
 PDNS_CHECK_CURL
 
 AC_CHECK_FUNCS([strcasestr])
+
+PDNS_CHECK_PTHREAD_NP
 
 AC_SUBST([socketdir])
 socketdir="/var/run"
@@ -154,7 +155,7 @@ PDNS_ENABLE_MALLOC_TRACE
 PDNS_ENABLE_VALGRIND
 AX_AVAILABLE_SYSTEMD
 AM_CONDITIONAL([HAVE_SYSTEMD], [ test x"$systemd" = "xy" ])
-PDNS_CHECK_PANDOC
+PDNS_CHECK_VIRTUALENV
 
 AC_SUBST(LIBS)
 
@@ -211,6 +212,10 @@ AC_MSG_NOTICE([OpenSSL ECDSA: $libcrypto_ecdsa])
 AS_IF([test "x$LIBSODIUM_LIBS" != "x"],
   [AC_MSG_NOTICE([libsodium ed25519: yes])],
   [AC_MSG_NOTICE([libsodium ed25519: no])]
+)
+AS_IF([test "x$LIBDECAF_LIBS" != "x"],
+  [AC_MSG_NOTICE([libdecaf ed25519 and ed448: yes])],
+  [AC_MSG_NOTICE([libdecaf ed25519 and ed448: no])]
 )
 AS_IF([test "x$PROTOBUF_LIBS" != "x" -a x"$PROTOC" != "x"],
   [AC_MSG_NOTICE([Protobuf: yes])],

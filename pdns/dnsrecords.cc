@@ -294,6 +294,13 @@ boilerplate_conv(OPENPGPKEY, 61,
                  conv.xfrBlob(d_keyring);
                  )
 
+boilerplate_conv(SMIMEA, 53,
+                 conv.xfr8BitInt(d_certusage);
+                 conv.xfr8BitInt(d_selector);
+                 conv.xfr8BitInt(d_matchtype);
+                 conv.xfrHexBlob(d_cert, true);
+                 )
+
 DSRecordContent::DSRecordContent() {}
 boilerplate_conv(DS, 43, 
                  conv.xfr16BitInt(d_tag); 
@@ -463,8 +470,8 @@ boilerplate_conv(TKEY, QType::TKEY,
 TKEYRecordContent::TKEYRecordContent() { d_othersize = 0; } // fix CID#1288932
 
 boilerplate_conv(URI, QType::URI,
-                 conv.xfr8BitInt(d_priority);
-                 conv.xfr8BitInt(d_weight);
+                 conv.xfr16BitInt(d_priority);
+                 conv.xfr16BitInt(d_weight);
                  conv.xfrText(d_target, true, false);
                  )
 
@@ -593,6 +600,7 @@ void reportOtherTypes()
    NSEC3RecordContent::report();
    NSEC3PARAMRecordContent::report();
    TLSARecordContent::report();
+   SMIMEARecordContent::report();
    OPENPGPKEYRecordContent::report();
    DLVRecordContent::report();
    DNSRecordContent::regist(QClass::ANY, QType::TSIG, &TSIGRecordContent::make, &TSIGRecordContent::make, "TSIG");

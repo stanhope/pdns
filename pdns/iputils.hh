@@ -313,7 +313,7 @@ public:
   Netmask(const ComboAddress& network, uint8_t bits=0xff)
   {
     d_network = network;
-    
+    d_network.sin4.sin_port=0;
     if(bits > 128)
       bits = (network.sin4.sin_family == AF_INET) ? 32 : 128;
     
@@ -444,7 +444,23 @@ public:
 
   bool operator<(const Netmask& rhs) const 
   {
-    return tie(d_network, d_bits) < tie(rhs.d_network, rhs.d_bits);
+    if (empty() && !rhs.empty())
+      return false;
+
+    if (!empty() && rhs.empty())
+      return true;
+
+    if (d_bits > rhs.d_bits)
+      return true;
+    if (d_bits < rhs.d_bits)
+      return false;
+
+    return d_network < rhs.d_network;
+  }
+
+  bool operator>(const Netmask& rhs) const
+  {
+    return rhs.operator<(*this);
   }
 
   bool operator==(const Netmask& rhs) const 

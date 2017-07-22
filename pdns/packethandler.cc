@@ -53,6 +53,8 @@
  
 AtomicCounter PacketHandler::s_count;
 NetmaskGroup PacketHandler::s_allowNotifyFrom;
+set<string> PacketHandler::s_forwardNotify;
+
 extern string s_programname;
 
 PacketHandler::PacketHandler():B(s_programname), d_dk(&B)
@@ -110,7 +112,6 @@ bool PacketHandler::addCDNSKEY(DNSPacket *p, DNSPacket *r, const SOAData& sd)
 
   DNSZoneRecord rr;
   bool haveOne=false;
-  DNSSECPrivateKey dpk;
 
   DNSSECKeeper::keyset_t entryPoints = d_dk.getEntryPoints(p->qdomain);
   for(const auto& value: entryPoints) {
@@ -147,7 +148,6 @@ bool PacketHandler::addDNSKEY(DNSPacket *p, DNSPacket *r, const SOAData& sd)
 {
   DNSZoneRecord rr;
   bool haveOne=false;
-  DNSSECPrivateKey dpk;
 
   DNSSECKeeper::keyset_t keyset = d_dk.getKeys(p->qdomain);
   for(const auto& value: keyset) {
@@ -199,13 +199,12 @@ bool PacketHandler::addCDS(DNSPacket *p, DNSPacket *r, const SOAData& sd)
   rr.auth=true;
 
   bool haveOne=false;
-  DNSSECPrivateKey dpk;
 
   DNSSECKeeper::keyset_t keyset = d_dk.getEntryPoints(p->qdomain);
 
   for(auto const &value : keyset) {
     for(auto const &digestAlgo : digestAlgos){
-      rr.dr.d_content=std::make_shared<DSRecordContent>(makeDSFromDNSKey(p->qdomain, value.first.getDNSKEY(), std::stoi(digestAlgo)));
+      rr.dr.d_content=std::make_shared<DSRecordContent>(makeDSFromDNSKey(p->qdomain, value.first.getDNSKEY(), pdns_stou(digestAlgo)));
       r->addRecord(rr);
       haveOne=true;
     }
@@ -265,7 +264,7 @@ int PacketHandler::doChaosRequest(DNSPacket *p, DNSPacket *r, DNSName &target)
       }
       else
         content=mode;
-      rr.dr.d_content = shared_ptr<DNSRecordContent>(DNSRecordContent::mastermake(QType::TXT, 1, "\""+content+"\""));
+      rr.dr.d_content = DNSRecordContent::mastermake(QType::TXT, 1, "\""+content+"\"");
     }
     else if (target==idserver) {
       // modes: disabled, hostname or custom
@@ -275,7 +274,7 @@ int PacketHandler::doChaosRequest(DNSPacket *p, DNSPacket *r, DNSName &target)
         r->setRcode(RCode::Refused);
         return 0;
       }
-      rr.dr.d_content=shared_ptr<DNSRecordContent>(DNSRecordContent::mastermake(QType::TXT, 1, id));
+      rr.dr.d_content=DNSRecordContent::mastermake(QType::TXT, 1, id);
     }
     else {
       r->setRcode(RCode::Refused);
@@ -397,7 +396,7 @@ int PacketHandler::doAdditionalProcessingAndDropAA(DNSPacket *p, DNSPacket *r, c
          !(i->dr.d_type==QType::MX || i->dr.d_type==QType::NS || i->dr.d_type==QType::SRV))
         continue;
 
-      if(r->d.aa && i->dr.d_name.countLabels() && i->dr.d_type==QType::NS && !B.getSOA(i->dr.d_name,sd,p) && !retargeted) { // drop AA in case of non-SOA-level NS answer, except for root referral
+      if(r->d.aa && i->dr.d_name.countLabels() && i->dr.d_type==QType::NS && !B.getSOA(i->dr.d_name,sd) && !retargeted) { // drop AA in case of non-SOA-level NS answer, except for root referral
         r->setA(false);
         //        i->d_place=DNSResourceRecord::AUTHORITY; // XXX FIXME
       }
@@ -831,7 +830,7 @@ int PacketHandler::processNotify(DNSPacket *p)
   */
   vector<string> meta;
 
-  if(!::arg().mustDo("slave")) {
+  if(!::arg().mustDo("slave") && s_forwardNotify.empty()) {
     L<<Logger::Error<<"Received NOTIFY for "<<p->qdomain<<" from "<<p->getRemote()<<" but slave support is disabled in the configuration"<<endl;
     return RCode::NotImp;
   }
@@ -886,7 +885,17 @@ int PacketHandler::processNotify(DNSPacket *p)
     
   // ok, we've done our checks
   di.backend = 0;
-  Communicator.addSlaveCheckRequest(di, p->d_remote);
+
+  if(!s_forwardNotify.empty()) {
+    set<string> forwardNotify(s_forwardNotify);
+    for(set<string>::const_iterator j=forwardNotify.begin();j!=forwardNotify.end();++j) {
+      L<<Logger::Warning<<"Relaying notification of domain "<<p->qdomain<<" from "<<p->getRemote()<<" to "<<*j<<endl;
+      Communicator.notify(p->qdomain,*j);
+    }
+  }
+
+  if(::arg().mustDo("slave"))
+    Communicator.addSlaveCheckRequest(di, p->d_remote);
   return 0;
 }
 
@@ -913,7 +922,6 @@ bool validDNSName(const DNSName &name)
 DNSPacket *PacketHandler::question(DNSPacket *p)
 {
   DNSPacket *ret;
-  int policyres = PolicyDecision::PASS;
 
   if(d_pdl)
   {
@@ -927,38 +935,7 @@ DNSPacket *PacketHandler::question(DNSPacket *p)
     rdqueries++;
   }
 
-  if(LPE)
-  {
-    policyres = LPE->police(p, NULL);
-  }
-
-  if (policyres == PolicyDecision::DROP)
-    return NULL;
-
-  if (policyres == PolicyDecision::TRUNCATE) {
-    ret=p->replyPacket();  // generate an empty reply packet
-    ret->d.tc = 1;
-    ret->commitD();
-    return ret;
-  }
-
-  ret=doQuestion(p);
-
-  if(LPE) {
-    policyres = LPE->police(p, ret);
-    if(policyres == PolicyDecision::DROP) {
-      delete ret;
-      return NULL;
-    }
-    if (policyres == PolicyDecision::TRUNCATE) {
-      delete ret;
-      ret=p->replyPacket();  // generate an empty reply packet
-      ret->d.tc = 1;
-      ret->commitD();
-    }
-
-  }
-  return ret;
+  return doQuestion(p);
 }
 
 
@@ -1264,7 +1241,7 @@ DNSPacket *PacketHandler::doQuestion(DNSPacket *p)
       return r;
     }
     
-    if(!B.getAuth(p, &sd, target)) {
+    if(!B.getAuth(target, p->qtype, &sd)) {
       DLOG(L<<Logger::Error<<"We have no authority over zone '"<<target<<"'"<<endl);
       if(!retargetcount) {
         r->setA(false); // drop AA if we never had a SOA in the first place
@@ -1293,7 +1270,7 @@ DNSPacket *PacketHandler::doQuestion(DNSPacket *p)
         if(addCDS(p,r, sd))
           goto sendit;
       }
-      else if(p->qtype.getCode() == QType::NSEC3PARAM)
+      else if(p->qtype.getCode() == QType::NSEC3PARAM && d_dk.isSecuredZone(sd.qname))
       {
         if(addNSEC3PARAM(p,r, sd))
           goto sendit;

@@ -51,6 +51,11 @@ pthread_rwlock_t DNSSECKeeper::s_keycachelock = PTHREAD_RWLOCK_INITIALIZER;
 AtomicCounter DNSSECKeeper::s_ops;
 time_t DNSSECKeeper::s_last_prune;
 
+bool DNSSECKeeper::doesDNSSEC()
+{
+  return d_keymetadb->doesDNSSEC();
+}
+
 bool DNSSECKeeper::isSecuredZone(const DNSName& zone) 
 {
   if(isPresigned(zone))
@@ -83,6 +88,8 @@ bool DNSSECKeeper::addKey(const DNSName& name, bool setSEPBit, int algorithm, in
         bits = 256;
       else if(algorithm == 14) // ECDSAP384SHA384
         bits = 384;
+      else if(algorithm == 16) // ED448
+        bits = 456;
       else {
         throw runtime_error("Can not guess key size for algorithm "+std::to_string(algorithm));
       }
@@ -559,11 +566,11 @@ void DNSSECKeeper::cleanup()
   if(now.tv_sec - s_last_prune > (time_t)(30)) {
     {
         WriteLock l(&s_metacachelock);
-        pruneCollection(s_metacache, ::arg().asNum("max-cache-entries"));
+        pruneCollection(*this, s_metacache, ::arg().asNum("max-cache-entries"));
     }
     {
         WriteLock l(&s_keycachelock);
-        pruneCollection(s_keycache, ::arg().asNum("max-cache-entries"));
+        pruneCollection(*this, s_keycache, ::arg().asNum("max-cache-entries"));
     }
     s_last_prune=time(0);
   }

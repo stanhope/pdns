@@ -287,7 +287,7 @@ void AuthWebServer::indexfunction(HttpRequest* req, HttpResponse* resp)
 /** Helper to build a record content as needed. */
 static inline string makeRecordContent(const QType& qtype, const string& content, bool noDot) {
   // noDot: for backend storage, pass true. for API users, pass false.
-  std::unique_ptr<DNSRecordContent> drc(DNSRecordContent::mastermake(qtype.getCode(), 1, content));
+  auto drc = DNSRecordContent::makeunique(qtype.getCode(), QClass::IN, content);
   return drc->getZoneRepresentation(noDot);
 }
 
@@ -471,10 +471,8 @@ static void gatherRecords(const Json container, const DNSName& qname, const QTyp
       makePtr(rr, &ptr);
 
       // verify that there's a zone for the PTR
-      DNSPacket fakePacket(false);
       SOAData sd;
-      fakePacket.qtype = QType::PTR;
-      if (!B.getAuth(&fakePacket, &sd, ptr.qname))
+      if (!B.getAuth(ptr.qname, QType(QType::PTR), &sd, false))
         throw ApiException("Could not find domain for PTR '"+ptr.qname.toString()+"' requested for '"+ptr.content+"'");
 
       ptr.domain_id = sd.domain_id;
@@ -530,6 +528,7 @@ static bool isValidMetadataKind(const string& kind, bool readonly) {
     "TSIG-ALLOW-DNSUPDATE",
     "FORWARD-DNSUPDATE",
     "SOA-EDIT-DNSUPDATE",
+    "NOTIFY-DNSUPDATE",
     "ALSO-NOTIFY",
     "AXFR-MASTER-TSIG",
     "GSS-ALLOW-AXFR-PRINCIPAL",
@@ -743,7 +742,7 @@ static void apiZoneCryptokeysGET(DNSName zonename, int inquireKeyId, HttpRespons
 
     if (value.second.keyType == DNSSECKeeper::KSK || value.second.keyType == DNSSECKeeper::CSK) {
       Json::array dses;
-      for(const int keyid : { 1, 2, 3, 4 })
+      for(const uint8_t keyid : { DNSSECKeeper::SHA1, DNSSECKeeper::SHA256, DNSSECKeeper::GOST, DNSSECKeeper::SHA384 })
         try {
           dses.push_back(makeDSFromDNSKey(zonename, value.first.getDNSKEY(), keyid).getZoneRepresentation());
         } catch (...) {}
@@ -1129,7 +1128,7 @@ static void apiServerZones(HttpRequest* req, HttpResponse* resp) {
 
     for(auto rr : new_records) {
       rr.domain_id = di.id;
-      di.backend->feedRecord(rr);
+      di.backend->feedRecord(rr, DNSName());
     }
     for(Comment& c : new_comments) {
       c.domain_id = di.id;
@@ -1312,12 +1311,8 @@ static void makePtr(const DNSResourceRecord& rr, DNSResourceRecord* ptr) {
 
 static void storeChangedPTRs(UeberBackend& B, vector<DNSResourceRecord>& new_ptrs) {
   for(const DNSResourceRecord& rr :  new_ptrs) {
-    DNSPacket fakePacket(false);
     SOAData sd;
-    sd.db = (DNSBackend *)-1;  // getAuth() cache bypass
-    fakePacket.qtype = QType::PTR;
-
-    if (!B.getAuth(&fakePacket, &sd, rr.qname))
+    if (!B.getAuth(rr.qname, QType(QType::PTR), &sd, false))
       throw ApiException("Could not find domain for PTR '"+rr.qname.toString()+"' requested for '"+rr.content+"' (while saving)");
 
     string soa_edit_api_kind;
@@ -1435,6 +1430,16 @@ static void patchZone(HttpRequest* req, HttpResponse* resp) {
         }
 
         if (replace_records) {
+          di.backend->lookup(QType(QType::ANY), qname);
+          DNSResourceRecord rr;
+          while (di.backend->get(rr)) {
+            if (qtype.getCode() == QType::CNAME && rr.qtype.getCode() != QType::CNAME) {
+              throw ApiException("RRset "+qname.toString()+" IN "+qtype.getName()+": Conflicts with pre-existing non-CNAME RRset");
+            } else if (qtype.getCode() != QType::CNAME && rr.qtype.getCode() == QType::CNAME) {
+              throw ApiException("RRset "+qname.toString()+" IN "+qtype.getName()+": Conflicts with pre-existing CNAME RRset");
+            }
+          }
+
           if (!di.backend->replaceRRSet(di.id, qname, qtype, new_records)) {
             throw ApiException("Hosting backend does not support editing records.");
           }

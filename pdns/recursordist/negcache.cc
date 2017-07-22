@@ -19,6 +19,8 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+#include <cinttypes>
+
 #include "negcache.hh"
 #include "misc.hh"
 #include "cachecleaner.hh"
@@ -155,7 +157,7 @@ void NegCache::clear() {
  * \param maxEntries The maximum number of entries that may exist in the cache.
  */
 void NegCache::prune(unsigned int maxEntries) {
-  pruneCollection(d_negcache, maxEntries, 200);
+  pruneCollection(*this, d_negcache, maxEntries, 200);
 }
 
 /*!
@@ -170,6 +172,12 @@ uint64_t NegCache::dumpToFile(FILE* fp) {
   for(const NegCacheEntry& ne : sidx) {
     ret++;
     fprintf(fp, "%s %d IN %s VIA %s\n", ne.d_name.toString().c_str(), (unsigned int) (ne.d_ttd - now), ne.d_qtype.getName().c_str(), ne.d_auth.toString().c_str());
+    for (const auto& rec : ne.DNSSECRecords.records) {
+      fprintf(fp, "%s %" PRId64 " IN %s %s ; (%s)\n", ne.d_name.toString().c_str(), static_cast<int64_t>(ne.d_ttd - now), DNSRecordContent::NumberToType(ne.d_qtype.getCode()).c_str(), rec.d_content->getZoneRepresentation().c_str(), vStates[ne.d_validationState]);
+    }
+    for (const auto& sig : ne.DNSSECRecords.signatures) {
+      fprintf(fp, "%s %" PRId64 " IN RRSIG %s ;\n", ne.d_name.toString().c_str(), static_cast<int64_t>(ne.d_ttd - now), sig.d_content->getZoneRepresentation().c_str());
+    }
   }
   return ret;
 }

@@ -61,9 +61,13 @@ static int setupTCPDownstream(shared_ptr<DownstreamState> ds, uint16_t& downstre
         SBind(sock, ds->sourceAddr);
       }
       setNonBlocking(sock);
+#ifdef MSG_FASTOPEN
       if (!ds->tcpFastOpen) {
         SConnectWithTimeout(sock, ds->remote, ds->tcpConnectTimeout);
       }
+#else
+      SConnectWithTimeout(sock, ds->remote, ds->tcpConnectTimeout);
+#endif /* MSG_FASTOPEN */
       return sock;
     }
     catch(const std::runtime_error& e) {
@@ -226,15 +230,8 @@ void* tcpClientThread(int pipefd)
      from that point on */
      
   bool outstanding = false;
-  blockfilter_t blockFilter = 0;
   time_t lastTCPCleanup = time(nullptr);
   
-  {
-    std::lock_guard<std::mutex> lock(g_luamutex);
-    auto candidate = g_lua.readVariable<boost::optional<blockfilter_t> >("blockFilter");
-    if(candidate)
-      blockFilter = *candidate;
-  }     
      
   auto localPolicy = g_policy.getLocal();
   auto localRulactions = g_rulactions.getLocal();
@@ -402,7 +399,7 @@ void* tcpClientThread(int pipefd)
 	gettime(&now);
 	gettime(&queryRealTime, true);
 
-	if (!processQuery(localDynBlockNMG, localDynBlockSMT, localRulactions, blockFilter, dq, poolname, &delayMsec, now)) {
+	if (!processQuery(localDynBlockNMG, localDynBlockSMT, localRulactions, dq, poolname, &delayMsec, now)) {
 	  goto drop;
 	}
 
@@ -490,14 +487,18 @@ void* tcpClientThread(int pipefd)
 
 	int dsock = -1;
 	uint16_t downstreamFailures=0;
+#ifdef MSG_FASTOPEN
 	bool freshConn = true;
+#endif /* MSG_FASTOPEN */
 	if(sockets.count(ds->remote) == 0) {
 	  dsock=setupTCPDownstream(ds, downstreamFailures);
 	  sockets[ds->remote]=dsock;
 	}
 	else {
 	  dsock=sockets[ds->remote];
+#ifdef MSG_FASTOPEN
 	  freshConn = false;
+#endif /* MSG_FASTOPEN */
         }
 
         ds->queries++;
@@ -566,7 +567,9 @@ void* tcpClientThread(int pipefd)
           downstreamFailures++;
           dsock=setupTCPDownstream(ds, downstreamFailures);
           sockets[ds->remote]=dsock;
+#ifdef MSG_FASTOPEN
           freshConn=true;
+#endif /* MSG_FASTOPEN */
           goto retry;
         }
 
@@ -586,7 +589,9 @@ void* tcpClientThread(int pipefd)
           downstreamFailures++;
           dsock=setupTCPDownstream(ds, downstreamFailures);
           sockets[ds->remote]=dsock;
+#ifdef MSG_FASTOPEN
           freshConn=true;
+#endif /* MSG_FASTOPEN */
           if(xfrStarted) {
             goto drop;
           }

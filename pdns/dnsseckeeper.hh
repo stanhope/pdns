@@ -51,7 +51,15 @@ public:
     ECCGOST=12,
     ECDSA256=13,
     ECDSA384=14,
-    ED25519=15
+    ED25519=15,
+    ED448=16
+  };
+
+  enum dsdigestalgorithm_t : uint8_t {
+    SHA1=1,
+    SHA256=2,
+    GOST=3,
+    SHA384=4
   };
 
   struct KeyMetaData
@@ -92,6 +100,7 @@ public:
     if (!algorithm.compare("ecdsa256")) return ECDSA256;
     if (!algorithm.compare("ecdsa384")) return ECDSA384;
     if (!algorithm.compare("ed25519")) return ED25519;
+    if (!algorithm.compare("ed448")) return ED448;
     return -1;
   }
 
@@ -126,6 +135,8 @@ public:
         return "ECDSAP384SHA384";
       case ED25519:
         return "ED25519";
+      case ED448:
+        return "ED448";
       case 252:
         return "INDIRECT";
       case 253:
@@ -156,6 +167,7 @@ public:
     if(d_ourDB)
       delete d_keymetadb;
   }
+  bool doesDNSSEC();
   bool isSecuredZone(const DNSName& zone);
   static uint64_t dbdnssecCacheSizes(const std::string& str);
   keyset_t getEntryPoints(const DNSName& zname);
@@ -256,6 +268,14 @@ private:
   static pthread_rwlock_t s_keycachelock;
   static AtomicCounter s_ops;
   static time_t s_last_prune;
+
+public:
+  void preRemoval(const KeyCacheEntry&)
+  {
+  }
+  void preRemoval(const METACacheEntry&)
+  {
+  }
 };
 
 class DNSPacket;

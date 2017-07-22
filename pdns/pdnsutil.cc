@@ -1,3 +1,4 @@
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -156,10 +157,10 @@ bool rectifyZone(DNSSECKeeper& dk, const DNSName& zone)
   DNSResourceRecord rr;
   set<DNSName> qnames, nsset, dsnames, insnonterm, delnonterm;
   map<DNSName,bool> nonterm;
-  bool doent=true;
   vector<DNSResourceRecord> rrs;
 
   while(sd.db->get(rr)) {
+    rr.qname.makeUsLowerCase();
     if (rr.qtype.getCode())
     {
       rrs.push_back(rr);
@@ -170,8 +171,7 @@ bool rectifyZone(DNSSECKeeper& dk, const DNSName& zone)
         dsnames.insert(rr.qname);
     }
     else
-      if(doent)
-        delnonterm.insert(rr.qname);
+      delnonterm.insert(rr.qname);
   }
 
   NSEC3PARAMRecordContent ns3pr;
@@ -222,6 +222,7 @@ bool rectifyZone(DNSSECKeeper& dk, const DNSName& zone)
     sd.db->startTransaction(zone, -1);
 
   bool realrr=true;
+  bool doent=true;
   uint32_t maxent = ::arg().asNum("max-ent-entries");
 
   dononterm:;
@@ -1153,7 +1154,7 @@ int loadZone(DNSName zone, const string& fname) {
       else
         haveSOA = true;
     }
-    db->feedRecord(rr);
+    db->feedRecord(rr, DNSName());
   }
   db->commitTransaction();
   return EXIT_SUCCESS;
@@ -1188,12 +1189,12 @@ int createZone(const DNSName &zone, const DNSName& nsname) {
   rr.content = DNSRecordContent::mastermake(rr.qtype.getCode(), 1, serializeSOAData(sd))->getZoneRepresentation(true);
   rr.domain_id = di.id;
   di.backend->startTransaction(zone, di.id);
-  di.backend->feedRecord(rr);
+  di.backend->feedRecord(rr, DNSName());
   if(!nsname.empty()) {
     cout<<"Also adding one NS record"<<endl;
     rr.qtype=QType::NS;
     rr.content=nsname.toStringNoDot();
-    di.backend->feedRecord(rr);
+    di.backend->feedRecord(rr, DNSName());
   }
   
   di.backend->commitTransaction();
@@ -1465,30 +1466,30 @@ void verifyCrypto(const string& zone)
     if(rr.qtype.getCode() == QType::DNSKEY) {
       cerr<<"got DNSKEY!"<<endl;
       apex=rr.qname;
-      drc = *dynamic_cast<DNSKEYRecordContent*>(DNSRecordContent::mastermake(QType::DNSKEY, 1, rr.content));
+      drc = *std::dynamic_pointer_cast<DNSKEYRecordContent>(DNSRecordContent::mastermake(QType::DNSKEY, 1, rr.content));
     }
     else if(rr.qtype.getCode() == QType::RRSIG) {
       cerr<<"got RRSIG"<<endl;
-      rrc = *dynamic_cast<RRSIGRecordContent*>(DNSRecordContent::mastermake(QType::RRSIG, 1, rr.content));
+      rrc = *std::dynamic_pointer_cast<RRSIGRecordContent>(DNSRecordContent::mastermake(QType::RRSIG, 1, rr.content));
     }
     else if(rr.qtype.getCode() == QType::DS) {
       cerr<<"got DS"<<endl;
-      dsrc = *dynamic_cast<DSRecordContent*>(DNSRecordContent::mastermake(QType::DS, 1, rr.content));
+      dsrc = *std::dynamic_pointer_cast<DSRecordContent>(DNSRecordContent::mastermake(QType::DS, 1, rr.content));
     }
     else {
       qname = rr.qname;
-      toSign.push_back(shared_ptr<DNSRecordContent>(DNSRecordContent::mastermake(rr.qtype.getCode(), 1, rr.content)));
+      toSign.push_back(DNSRecordContent::mastermake(rr.qtype.getCode(), 1, rr.content));
     }
   }
   
-  string msg = getMessageForRRSET(qname, rrc, toSign);        
+  string msg = getMessageForRRSET(qname, rrc, toSign);
   cerr<<"Verify: "<<DNSCryptoKeyEngine::makeFromPublicKeyString(drc.d_algorithm, drc.d_key)->verify(msg, rrc.d_signature)<<endl;
   if(dsrc.d_digesttype) {
     cerr<<"Calculated DS: "<<apex.toString()<<" IN DS "<<makeDSFromDNSKey(apex, drc, dsrc.d_digesttype).getZoneRepresentation()<<endl;
     cerr<<"Original DS:   "<<apex.toString()<<" IN DS "<<dsrc.getZoneRepresentation()<<endl;
   }
 #if 0
-  DNSCryptoKeyEngine*key=DNSCryptoKeyEngine::makeFromISCString(drc, "Private-key-format: v1.2\n"
+  std::shared_ptr<DNSCryptoKeyEngine> key=DNSCryptoKeyEngine::makeFromISCString(drc, "Private-key-format: v1.2\n"
       "Algorithm: 12 (ECC-GOST)\n"
       "GostAsn1: MEUCAQAwHAYGKoUDAgITMBIGByqFAwICIwEGByqFAwICHgEEIgQg/9MiXtXKg9FDXDN/R9CmVhJDyuzRAIgh4tPwCu4NHIs=\n");
   string resign=key->sign(hash);
@@ -1688,7 +1689,7 @@ bool showZone(DNSSECKeeper& dk, const DNSName& zone, bool exportDS = false)
 
       int bits = -1;
       try {
-        std::unique_ptr<DNSCryptoKeyEngine> engine(DNSCryptoKeyEngine::makeFromPublicKeyString(key.d_algorithm, key.d_key)); // throws on unknown algo or bad key
+        std::shared_ptr<DNSCryptoKeyEngine> engine(DNSCryptoKeyEngine::makeFromPublicKeyString(key.d_algorithm, key.d_key)); // throws on unknown algo or bad key
         bits=engine->getBits();
       }
       catch(std::exception& e) {
@@ -1703,16 +1704,16 @@ bool showZone(DNSSECKeeper& dk, const DNSName& zone, bool exportDS = false)
       shown=true;
 
       const std::string prefix(exportDS ? "" : "DS = ");
-      cout<<prefix<<zone.toString()<<" IN DS "<<makeDSFromDNSKey(zone, key, 1).getZoneRepresentation() << " ; ( SHA1 digest )" << endl;
-      cout<<prefix<<zone.toString()<<" IN DS "<<makeDSFromDNSKey(zone, key, 2).getZoneRepresentation() << " ; ( SHA256 digest )" << endl;
+      cout<<prefix<<zone.toString()<<" IN DS "<<makeDSFromDNSKey(zone, key, DNSSECKeeper::SHA1).getZoneRepresentation() << " ; ( SHA1 digest )" << endl;
+      cout<<prefix<<zone.toString()<<" IN DS "<<makeDSFromDNSKey(zone, key, DNSSECKeeper::SHA256).getZoneRepresentation() << " ; ( SHA256 digest )" << endl;
       try {
-        string output=makeDSFromDNSKey(zone, key, 3).getZoneRepresentation();
+        string output=makeDSFromDNSKey(zone, key, DNSSECKeeper::GOST).getZoneRepresentation();
         cout<<prefix<<zone.toString()<<" IN DS "<<output<< " ; ( GOST R 34.11-94 digest )" << endl;
       }
       catch(...)
       {}
       try {
-        string output=makeDSFromDNSKey(zone, key, 4).getZoneRepresentation();
+        string output=makeDSFromDNSKey(zone, key, DNSSECKeeper::SHA384).getZoneRepresentation();
         cout<<prefix<<zone.toString()<<" IN DS "<<output<< " ; ( SHA-384 digest )" << endl;
       }
       catch(...)
@@ -1754,16 +1755,16 @@ bool showZone(DNSSECKeeper& dk, const DNSName& zone, bool exportDS = false)
       if (value.second.keyType == DNSSECKeeper::KSK || value.second.keyType == DNSSECKeeper::CSK) {
         const auto &key = value.first.getDNSKEY();
         const std::string prefix(exportDS ? "" : "DS = ");
-        cout<<prefix<<zone.toString()<<" IN DS "<<makeDSFromDNSKey(zone, key, 1).getZoneRepresentation() << " ; ( SHA1 digest )" << endl;
-        cout<<prefix<<zone.toString()<<" IN DS "<<makeDSFromDNSKey(zone, key, 2).getZoneRepresentation() << " ; ( SHA256 digest )" << endl;
+        cout<<prefix<<zone.toString()<<" IN DS "<<makeDSFromDNSKey(zone, key, DNSSECKeeper::SHA1).getZoneRepresentation() << " ; ( SHA1 digest )" << endl;
+        cout<<prefix<<zone.toString()<<" IN DS "<<makeDSFromDNSKey(zone, key, DNSSECKeeper::SHA256).getZoneRepresentation() << " ; ( SHA256 digest )" << endl;
         try {
-          string output=makeDSFromDNSKey(zone, key, 3).getZoneRepresentation();
+          string output=makeDSFromDNSKey(zone, key, DNSSECKeeper::GOST).getZoneRepresentation();
           cout<<prefix<<zone.toString()<<" IN DS "<<output<< " ; ( GOST R 34.11-94 digest )" << endl;
         }
         catch(...)
         {}
         try {
-          string output=makeDSFromDNSKey(zone, key, 4).getZoneRepresentation();
+          string output=makeDSFromDNSKey(zone, key, DNSSECKeeper::SHA384).getZoneRepresentation();
           cout<<prefix<<zone.toString()<<" IN DS "<<output<< " ; ( SHA-384 digest )" << endl;
         }
         catch(...)
@@ -1901,12 +1902,12 @@ void testSchema(DNSSECKeeper& dk, const DNSName& zone)
   rr.auth=1;
   rr.content="ns1.example.com. ahu.example.com. 2012081039 7200 3600 1209600 3600";
   cout<<"Feeding SOA"<<endl;
-  db->feedRecord(rr);
+  db->feedRecord(rr, DNSName());
   rr.qtype=QType::TXT;
   // 300 As
   rr.content="\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"";
   cout<<"Feeding overlong TXT"<<endl;
-  db->feedRecord(rr);
+  db->feedRecord(rr, DNSName());
   cout<<"Committing"<<endl;
   db->commitTransaction();
   cout<<"Querying TXT"<<endl;
@@ -1938,12 +1939,12 @@ void testSchema(DNSSECKeeper& dk, const DNSName& zone)
   rr.auth=1;
   rr.content="ns1.example.com. ahu.example.com. 2012081039 7200 3600 1209600 3600";
   cout<<"Feeding SOA"<<endl;
-  db->feedRecord(rr);
+  db->feedRecord(rr, DNSName());
 
   rr.qtype=QType::A;
   rr.qname=DNSName("_underscore")+zone;
   rr.content="127.0.0.1";
-  db->feedRecord(rr);
+  db->feedRecord(rr, DNSName());
 
   rr.qname=DNSName("bla")+zone;
   cout<<"Committing"<<endl;
@@ -2012,8 +2013,11 @@ try
     cout<<"             [content..]           Add one or more records to ZONE"<<endl;
     cout<<"add-zone-key ZONE {zsk|ksk} [BITS] [active|inactive]"<<endl;
     cout<<"             [rsasha1|rsasha256|rsasha512|gost|ecdsa256|ecdsa384";
-#ifdef HAVE_LIBSODIUM
+#if defined(HAVE_LIBSODIUM) || defined(HAVE_LIBDECAF)
     cout<<"|ed25519";
+#endif
+#ifdef HAVE_LIBDECAF
+    cout<<"|ed448";
 #endif
     cout<<"]"<<endl;
     cout<<"                                   Add a ZSK or KSK to zone and specify algo&bits"<<endl;
@@ -2811,8 +2815,8 @@ try
     DNSSECPrivateKey dpk=dk.getKeyById(zone, id);
     cout << zone<<" IN DNSKEY "<<dpk.getDNSKEY().getZoneRepresentation() <<endl;
     if(dpk.d_flags == 257) {
-      cout << zone << " IN DS "<<makeDSFromDNSKey(zone, dpk.getDNSKEY(), 1).getZoneRepresentation() << endl;
-      cout << zone << " IN DS "<<makeDSFromDNSKey(zone, dpk.getDNSKEY(), 2).getZoneRepresentation() << endl;
+      cout << zone << " IN DS "<<makeDSFromDNSKey(zone, dpk.getDNSKEY(), DNSSECKeeper::SHA1).getZoneRepresentation() << endl;
+      cout << zone << " IN DS "<<makeDSFromDNSKey(zone, dpk.getDNSKEY(), DNSSECKeeper::SHA256).getZoneRepresentation() << endl;
     }
   }
   else if(cmds[0] == "generate-zone-key") {
@@ -2853,6 +2857,8 @@ try
           bits = 256;
         else if(algorithm == 14)
           bits = 384;
+        else if(algorithm == 16) // ED448
+          bits = 456;
         else {
           throw runtime_error("Can't guess key size for algorithm "+std::to_string(algorithm));
         }
@@ -3168,7 +3174,7 @@ try
         return 1;
       } 
 
-      DNSCryptoKeyEngine *dke = NULL;
+      std::shared_ptr<DNSCryptoKeyEngine> dke = nullptr;
       // lookup correct key      
       for(DNSBackend::KeyData &kd :  keys) {
         if (kd.id == id) {
@@ -3250,7 +3256,7 @@ try
       if (!src->list(di.zone, di.id, true)) throw PDNSException("Failed to list records");
       nr=0;
       while(src->get(rr)) {
-        if (!tgt->feedRecord(rr)) throw PDNSException("Failed to feed record");
+        if (!tgt->feedRecord(rr, DNSName())) throw PDNSException("Failed to feed record");
         nr++;
       }
       // move comments

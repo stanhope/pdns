@@ -240,8 +240,8 @@ install_auth() {
     jq"
 
   run "cd .."
-  run "wget https://www.verisignlabs.com/dnssec-tools/packages/jdnssec-tools-0.13.tar.gz"
-  run "sudo tar xfz jdnssec-tools-0.13.tar.gz --strip-components=1 -C /"
+  run "wget https://www.monshouwer.eu/download/3rd_party/jdnssec-tools-0.13.ecdsafix.tar.gz"
+  run "sudo tar xfz jdnssec-tools-0.13.ecdsafix.tar.gz --strip-components=1 -C /"
   run "cd ${TRAVIS_BUILD_DIR}"
 
   # pkcs11 test requirements / setup
@@ -258,7 +258,8 @@ install_auth() {
 
   # bind-backend tests requirements
   run "sudo apt-get -qq --no-install-recommends install \
-    alien"
+    alien\
+    fakeroot"
   run "cd .."
   run "wget ftp://ftp.nominum.com/pub/nominum/dnsperf/2.0.0.0/dnsperf-2.0.0.0-1-rhel-6-x86_64.tar.gz"
   run "tar xzvf dnsperf-2.0.0.0-1-rhel-6-x86_64.tar.gz"
@@ -319,36 +320,22 @@ install_auth() {
   run "sudo chmod 755 /etc/authbind/byport/53"
 }
 
-install_docs() {
-  ### documentation requirements
-  run "sudo apt-get -qq --no-install-recommends install \
-    pandoc \
-    xmlto"
-
-  # documentation test requirements
-  run "virtualenv $HOME/.venv"
-  run "source $HOME/.venv/bin/activate"
-  run "pip install -q pandocfilters==1.2.3 mkdocs==0.14 linkchecker==9.3 click==5.1 requests==2.9.2"
-  run "deactivate"
-}
-
 install_recursor() {
   # recursor test requirements / setup
   run "sudo apt-get -qq --no-install-recommends install \
     authbind \
     daemontools \
-    libbotan-1.10-0 \
     libfaketime \
-    liblua5.2-0 \
     moreutils \
     jq"
   run "cd .."
   run "wget https://s3.amazonaws.com/alexa-static/top-1m.csv.zip"
   run "unzip top-1m.csv.zip -d ${TRAVIS_BUILD_DIR}/regression-tests"
-  PDNS_SERVER_VERSION="0.0.880gcb54743-1pdns"
-  run "wget https://downloads.powerdns.com/autobuilt/auth/deb/$PDNS_SERVER_VERSION.trusty-amd64/pdns-server_$PDNS_SERVER_VERSION.trusty_amd64.deb"
-  run "wget https://downloads.powerdns.com/autobuilt/auth/deb/$PDNS_SERVER_VERSION.trusty-amd64/pdns-tools_$PDNS_SERVER_VERSION.trusty_amd64.deb"
-  run "sudo dpkg -i pdns-server_$PDNS_SERVER_VERSION.trusty_amd64.deb pdns-tools_$PDNS_SERVER_VERSION.trusty_amd64.deb"
+  run 'echo -e "deb [arch=amd64] http://repo.powerdns.com/ubuntu trusty-auth-40 main" | sudo tee /etc/apt/sources.list.d/pdns.list'
+  run 'echo -e "Package: pdns-*\nPin: origin PowerDNS\nPin-Priority: 600" | sudo tee /etc/apt/preferences.d/pdns.list'
+  run 'curl https://repo.powerdns.com/FD380FBB-pub.asc | sudo apt-key add - '
+  run 'sudo apt-get update'
+  run 'sudo apt-get -y install pdns-server pdns-tools'
   run "sudo service pdns stop"
   run 'for suffix in {1..40}; do sudo /sbin/ip addr add 10.0.3.$suffix/32 dev lo; done'
   run "sudo touch /etc/authbind/byport/53"
@@ -397,7 +384,7 @@ build_recursor() {
   run "tar xf pdns-recursor-*.tar.bz2"
   run "rm -f pdns-recursor-*.tar.bz2"
   run "cd pdns-recursor-*"
-  run "CFLAGS='-O1' CXXFLAGS='-O1' ./configure \
+  run "CFLAGS='-O1' CXXFLAGS='-O1' CXX=${COMPILER} ./configure \
     --prefix=$PDNS_RECURSOR_DIR \
     --enable-unit-tests \
     --disable-silent-rules"
@@ -427,21 +414,13 @@ build_dnsdist(){
 
 }
 
-build_docs() {
-  run "./bootstrap"
-  run "source $HOME/.venv/bin/activate"
-  run "./configure --disable-dependency-tracking --with-modules='' --with-dyn-modules=''"
-  run "make -C docs"
-  run "deactivate"
-}
-
 test_auth() {
   run "make -j3 check"
   run "test -f pdns/test-suite.log && cat pdns/test-suite.log || true"
   run "test -f modules/remotebackend/test-suite.log && cat modules/remotebackend/test-suite.log || true"
 
   #DNSName - make -k -j3 -C pdns $(grep '(EXEEXT):' pdns/Makefile | cut -f1 -d\$ | grep -E -v 'dnsdist|calidns')
-  run 'make -k -j3 -C pdns $(grep "(EXEEXT):" pdns/Makefile | cut -f1 -d\$ | grep -E -v "dnspcap2protobuf|dnsdist|calidns|speedtest")'
+  run 'make -k -j3 -C pdns $(grep "(EXEEXT):" pdns/Makefile | cut -f1 -d\$)'
 
   run "cd pdns"
   run "./pdnsutil test-algorithms"
@@ -566,12 +545,6 @@ test_recursor() {
   run "cd regression-tests.api"
   run "./runtests recursor"
   run "cd .."
-}
-
-test_docs() {
-  run "source $HOME/.venv/bin/activate"
-  run "make -C docs check-links"
-  run " deactivate"
 }
 
 test_dnsdist(){

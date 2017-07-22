@@ -14,7 +14,7 @@ static recordsAndSignatures genRecsAndSigs(const DNSName& name, const uint16_t q
   rec.d_type = qtype;
   rec.d_ttl = 600;
   rec.d_place = DNSResourceRecord::AUTHORITY;
-  rec.d_content = shared_ptr<DNSRecordContent>(DNSRecordContent::mastermake(qtype, QClass::IN, content));
+  rec.d_content = DNSRecordContent::mastermake(qtype, QClass::IN, content);
 
   ret.records.push_back(rec);
 
@@ -336,7 +336,11 @@ BOOST_AUTO_TEST_CASE(test_dumpToFile) {
   NegCache cache;
   vector<string> expected;
   expected.push_back("www1.powerdns.com. 600 IN TYPE0 VIA powerdns.com.\n");
+  expected.push_back("www1.powerdns.com. 600 IN ENT deadbeef. ; (Indeterminate)\n");
+  expected.push_back("www1.powerdns.com. 600 IN RRSIG NSEC 5 3 600 21000101000000 21000101000000 24567 dummy. data ;\n");
   expected.push_back("www2.powerdns.com. 600 IN TYPE0 VIA powerdns.com.\n");
+  expected.push_back("www2.powerdns.com. 600 IN ENT deadbeef. ; (Indeterminate)\n");
+  expected.push_back("www2.powerdns.com. 600 IN RRSIG NSEC 5 3 600 21000101000000 21000101000000 24567 dummy. data ;\n");
 
   struct timeval now;
   Utility::gettimeofday(&now, 0);

@@ -43,8 +43,7 @@ void doSecPoll(time_t* last_secpoll)
   int res=sr.beginResolve(query, QType(QType::TXT), 1, ret);
 
   if (g_dnssecmode != DNSSECMode::Off && res) {
-    ResolveContext ctx;
-    state = validateRecords(ctx, ret);
+    state = sr.getValidationState();
   }
 
   if(state == Bogus) {
@@ -68,10 +67,10 @@ void doSecPoll(time_t* last_secpoll)
     *last_secpoll=now.tv_sec;
   }
   else {
-    if(pkgv.find("0.0."))
+    if(pkgv.find("0.0.") != 0)
       L<<Logger::Warning<<"Could not retrieve security status update for '" +pkgv+ "' on '"<<query<<"', RCODE = "<< RCode::to_s(res)<<endl;
     else
-      L<<Logger::Warning<<"Ignoring response for security status update, this a non-release version."<<endl;
+      L<<Logger::Warning<<"Ignoring response for security status update, this is a non-release version."<<endl;
 
     if(g_security_status == 1) // it was ok, now it is unknown
       g_security_status = 0;

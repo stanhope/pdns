@@ -196,7 +196,7 @@ void RecursorLua4::DNSQuestion::addRecord(uint16_t type, const std::string& cont
   dr.d_ttl=ttl.get_value_or(3600);
   dr.d_type = type;
   dr.d_place = place;
-  dr.d_content = shared_ptr<DNSRecordContent>(DNSRecordContent::mastermake(type, 1, content));
+  dr.d_content = DNSRecordContent::mastermake(type, 1, content);
   records.push_back(dr);
 }
 
@@ -343,6 +343,7 @@ RecursorLua4::RecursorLua4(const std::string& fname)
 
   d_lw->registerMember("rcode", &DNSQuestion::rcode);
   d_lw->registerMember("tag", &DNSQuestion::tag);
+  d_lw->registerMember("requestorId", &DNSQuestion::requestorId);
   d_lw->registerMember("followupFunction", &DNSQuestion::followupFunction);
   d_lw->registerMember("followupPrefix", &DNSQuestion::followupPrefix);
   d_lw->registerMember("followupName", &DNSQuestion::followupName);
@@ -371,7 +372,7 @@ RecursorLua4::RecursorLua4(const std::string& fname)
     },
     [](DNSFilterEngine::Policy& pol, const std::string& content) {
       // Only CNAMES for now, when we ever add a d_custom_type, there will be pain
-      pol.d_custom = shared_ptr<DNSRecordContent>(DNSRecordContent::mastermake(QType::CNAME, 1, content));
+      pol.d_custom = DNSRecordContent::mastermake(QType::CNAME, 1, content);
     }
   );
   d_lw->registerFunction("getDH", &DNSQuestion::getDH);
@@ -400,7 +401,7 @@ RecursorLua4::RecursorLua4(const std::string& fname)
     });
 
 
-  d_lw->registerFunction<void(DNSRecord::*)(const std::string&)>("changeContent", [](DNSRecord& dr, const std::string& newContent) { dr.d_content = shared_ptr<DNSRecordContent>(DNSRecordContent::mastermake(dr.d_type, 1, newContent)); });
+  d_lw->registerFunction<void(DNSRecord::*)(const std::string&)>("changeContent", [](DNSRecord& dr, const std::string& newContent) { dr.d_content = DNSRecordContent::mastermake(dr.d_type, 1, newContent); });
   d_lw->registerFunction("addAnswer", &DNSQuestion::addAnswer);
   d_lw->registerFunction("addRecord", &DNSQuestion::addRecord);
   d_lw->registerFunction("getRecords", &DNSQuestion::getRecords);
@@ -518,6 +519,15 @@ RecursorLua4::RecursorLua4(const std::string& fname)
   d_lw->registerFunction("set", &DynMetric::set);
   d_lw->registerFunction("get", &DynMetric::get);
 
+  d_lw->writeFunction("getStat", [](const std::string& str) {
+      uint64_t result = 0;
+      optional<uint64_t> value = getStatByName(str);
+      if (value) {
+        result = *value;
+      }
+      return result;
+    });
+
   d_lw->writeFunction("getRecursorThreadId", []() {
       return getRecursorThreadId();
     });
@@ -587,10 +597,10 @@ bool RecursorLua4::ipfilter(const ComboAddress& remote, const ComboAddress& loca
   return false; // don't block
 }
 
-unsigned int RecursorLua4::gettag(const ComboAddress& remote, const Netmask& ednssubnet, const ComboAddress& local, const DNSName& qname, uint16_t qtype, std::vector<std::string>* policyTags, LuaContext::LuaObject& data, const std::map<uint16_t, EDNSOptionView>& ednsOptions)
+unsigned int RecursorLua4::gettag(const ComboAddress& remote, const Netmask& ednssubnet, const ComboAddress& local, const DNSName& qname, uint16_t qtype, std::vector<std::string>* policyTags, LuaContext::LuaObject& data, const std::map<uint16_t, EDNSOptionView>& ednsOptions, bool tcp, std::string& requestorId)
 {
   if(d_gettag) {
-    auto ret = d_gettag(remote, ednssubnet, local, qname, qtype, ednsOptions);
+    auto ret = d_gettag(remote, ednssubnet, local, qname, qtype, ednsOptions, tcp);
 
     if (policyTags) {
       const auto& tags = std::get<1>(ret);
@@ -603,6 +613,10 @@ unsigned int RecursorLua4::gettag(const ComboAddress& remote, const Netmask& edn
     const auto dataret = std::get<2>(ret);
     if (dataret) {
       data = *dataret;
+    }
+    const auto reqIdret = std::get<3>(ret);
+    if (reqIdret) {
+      requestorId = *reqIdret;
     }
     return std::get<0>(ret);
   }

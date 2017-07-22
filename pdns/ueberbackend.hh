@@ -98,9 +98,10 @@ public:
 
   void lookup(const QType &, const DNSName &qdomain, DNSPacket *pkt_p=0,  int zoneId=-1);
 
-  bool getAuth(DNSPacket *p, SOAData *sd, const DNSName &target);
-  bool getSOA(const DNSName &domain, SOAData &sd, DNSPacket *p=0);
-  bool getSOAUncached(const DNSName &domain, SOAData &sd, DNSPacket *p=0);  // same, but ignores cache
+  /** Determines if we are authoritative for a zone, and at what level */
+  bool getAuth(const DNSName &target, const QType &qtype, SOAData* sd, bool cachedOk=true);
+  bool getSOA(const DNSName &domain, SOAData &sd);
+  bool getSOAUncached(const DNSName &domain, SOAData &sd);  // same, but ignores cache
   bool get(DNSZoneRecord &r);
   void getAllDomains(vector<DomainInfo> *domains, bool include_disabled=false);
 
@@ -109,6 +110,7 @@ public:
   bool getDomainInfo(const DNSName &domain, DomainInfo &di);
   bool createDomain(const DNSName &domain);
   
+  bool doesDNSSEC();
   bool addDomainKey(const DNSName& name, const DNSBackend::KeyData& key, int64_t& id);
   bool getDomainKeys(const DNSName& name, std::vector<DNSBackend::KeyData>& keys);
   bool getAllDomainMetadata(const DNSName& name, std::map<std::string, std::vector<std::string> >& meta);

@@ -49,7 +49,7 @@
 
 using namespace boost::assign;
 
-DNSCryptoKeyEngine* DNSCryptoKeyEngine::makeFromISCFile(DNSKEYRecordContent& drc, const char* fname)
+shared_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::makeFromISCFile(DNSKEYRecordContent& drc, const char* fname)
 {
   string sline, isc;
   FILE *fp=fopen(fname, "r");
@@ -61,15 +61,14 @@ DNSCryptoKeyEngine* DNSCryptoKeyEngine::makeFromISCFile(DNSKEYRecordContent& drc
     isc += sline;
   }
   fclose(fp);
-  DNSCryptoKeyEngine* dke = makeFromISCString(drc, isc);
+  shared_ptr<DNSCryptoKeyEngine> dke = makeFromISCString(drc, isc);
   if(!dke->checkKey()) {
-    delete dke;
     throw runtime_error("Invalid DNS Private Key in file '"+string(fname));
   }
   return dke;
 }
 
-DNSCryptoKeyEngine* DNSCryptoKeyEngine::makeFromISCString(DNSKEYRecordContent& drc, const std::string& content)
+shared_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::makeFromISCString(DNSKEYRecordContent& drc, const std::string& content)
 {
   bool pkcs11=false;
   int algorithm = 0;
@@ -104,7 +103,7 @@ DNSCryptoKeyEngine* DNSCryptoKeyEngine::makeFromISCString(DNSKEYRecordContent& d
     B64Decode(value, raw);
     stormap[toLower(key)]=raw;
   }
-  DNSCryptoKeyEngine* dpk;
+  shared_ptr<DNSCryptoKeyEngine> dpk;
 
   if (pkcs11) {
 #ifdef HAVE_P11KIT1
@@ -140,11 +139,11 @@ std::string DNSCryptoKeyEngine::convertToISC() const
   return ret.str();
 }
 
-DNSCryptoKeyEngine* DNSCryptoKeyEngine::make(unsigned int algo)
+shared_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::make(unsigned int algo)
 {
-  makers_t& makers = getMakers();
+  const makers_t& makers = getMakers();
   makers_t::const_iterator iter = makers.find(algo);
-  if(iter != makers.end())
+  if(iter != makers.cend())
     return (iter->second)(algo);
   else {
     throw runtime_error("Request to create key object for unknown algorithm number "+std::to_string(algo));
@@ -240,6 +239,8 @@ pair<unsigned int, unsigned int> DNSCryptoKeyEngine::testMakers(unsigned int alg
     bits=256;
   else if(algo == 14) // ECDSAP384SHA384
     bits = 384;
+  else if(algo == 16) // ED448
+    bits = 456;
   else
     throw runtime_error("Can't guess key size for algorithm "+std::to_string(algo));
 
@@ -308,20 +309,20 @@ pair<unsigned int, unsigned int> DNSCryptoKeyEngine::testMakers(unsigned int alg
   return make_pair(udiffSign, udiffVerify);
 }
 
-DNSCryptoKeyEngine* DNSCryptoKeyEngine::makeFromPublicKeyString(unsigned int algorithm, const std::string& content)
+shared_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::makeFromPublicKeyString(unsigned int algorithm, const std::string& content)
 {
-  DNSCryptoKeyEngine* dpk=make(algorithm);
+  shared_ptr<DNSCryptoKeyEngine> dpk=make(algorithm);
   dpk->fromPublicKeyString(content);
   return dpk;
 }
 
 
-DNSCryptoKeyEngine* DNSCryptoKeyEngine::makeFromPEMString(DNSKEYRecordContent& drc, const std::string& raw)
+shared_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::makeFromPEMString(DNSKEYRecordContent& drc, const std::string& raw)
 {
   
-  for(makers_t::value_type& val :  getMakers())
+  for(const makers_t::value_type& val : getMakers())
   {
-    DNSCryptoKeyEngine* ret=0;
+    shared_ptr<DNSCryptoKeyEngine> ret=nullptr;
     try {
       ret = val.second(val.first);
       ret->fromPEMString(drc, raw);
@@ -329,14 +330,13 @@ DNSCryptoKeyEngine* DNSCryptoKeyEngine::makeFromPEMString(DNSKEYRecordContent& d
     }
     catch(...)
     {
-      delete ret; // fine if 0
     }
   }
   return 0;
 }
 
 
-bool sharedDNSSECCompare(const shared_ptr<DNSRecordContent>& a, const shared_ptr<DNSRecordContent>& b)
+static bool sharedDNSSECCompare(const shared_ptr<DNSRecordContent>& a, const shared_ptr<DNSRecordContent>& b)
 {
   return a->serialize(g_rootdnsname, true, true) < b->serialize(g_rootdnsname, true, true);
 }
@@ -398,41 +398,66 @@ string getMessageForRRSET(const DNSName& qname, const RRSIGRecordContent& rrc, v
   return toHash;
 }
 
-DSRecordContent makeDSFromDNSKey(const DNSName& qname, const DNSKEYRecordContent& drc, int digest)
+bool DNSCryptoKeyEngine::isAlgorithmSupported(unsigned int algo)
+{
+  const makers_t& makers = getMakers();
+  makers_t::const_iterator iter = makers.find(algo);
+  return iter != makers.cend();
+}
+
+static unsigned int digestToAlgorithmNumber(uint8_t digest)
+{
+  switch(digest) {
+  case DNSSECKeeper::SHA1:
+    return DNSSECKeeper::RSASHA1;
+  case DNSSECKeeper::SHA256:
+    return DNSSECKeeper::RSASHA256;
+  case DNSSECKeeper::GOST:
+    return DNSSECKeeper::ECCGOST;
+  case DNSSECKeeper::SHA384:
+    return DNSSECKeeper::ECDSA384;
+  default:
+    throw std::runtime_error("Unknown digest type " + std::to_string(digest));
+  }
+  return 0;
+}
+
+bool DNSCryptoKeyEngine::isDigestSupported(uint8_t digest)
+{
+  try {
+    unsigned int algo = digestToAlgorithmNumber(digest);
+    return isAlgorithmSupported(algo);
+  }
+  catch(const std::exception& e) {
+    return false;
+  }
+}
+
+DSRecordContent makeDSFromDNSKey(const DNSName& qname, const DNSKEYRecordContent& drc, uint8_t digest)
 {
   string toHash;
   toHash.assign(qname.toDNSStringLC()); 
   toHash.append(const_cast<DNSKEYRecordContent&>(drc).serialize(DNSName(), true, true));
   
   DSRecordContent dsrc;
-  if(digest==1) {
-    shared_ptr<DNSCryptoKeyEngine> dpk(DNSCryptoKeyEngine::make(5)); // gives us SHA1
+  try {
+    unsigned int algo = digestToAlgorithmNumber(digest);
+    shared_ptr<DNSCryptoKeyEngine> dpk(DNSCryptoKeyEngine::make(algo));
     dsrc.d_digest = dpk->hash(toHash);
   }
-  else if(digest == 2) {
-    shared_ptr<DNSCryptoKeyEngine> dpk(DNSCryptoKeyEngine::make(8)); // gives us SHA256
-    dsrc.d_digest = dpk->hash(toHash);
-  }
-  else if(digest == 3) {
-    shared_ptr<DNSCryptoKeyEngine> dpk(DNSCryptoKeyEngine::make(12)); // gives us GOST
-    dsrc.d_digest = dpk->hash(toHash);
-  }
-  else if(digest == 4) {
-    shared_ptr<DNSCryptoKeyEngine> dpk(DNSCryptoKeyEngine::make(14)); // gives us ECDSAP384
-    dsrc.d_digest = dpk->hash(toHash);
-  }
-  else 
+  catch(const std::exception& e) {
     throw std::runtime_error("Asked to a DS of unknown digest type " + std::to_string(digest)+"\n");
+  }
   
-  dsrc.d_algorithm= drc.d_algorithm;
-  dsrc.d_digesttype=digest;
-  dsrc.d_tag=const_cast<DNSKEYRecordContent&>(drc).getTag();
+  dsrc.d_algorithm = drc.d_algorithm;
+  dsrc.d_digesttype = digest;
+  dsrc.d_tag = const_cast<DNSKEYRecordContent&>(drc).getTag();
 
   return dsrc;
 }
 
 
-DNSKEYRecordContent makeDNSKEYFromDNSCryptoKeyEngine(const DNSCryptoKeyEngine* pk, uint8_t algorithm, uint16_t flags)
+DNSKEYRecordContent makeDNSKEYFromDNSCryptoKeyEngine(const std::shared_ptr<DNSCryptoKeyEngine> pk, uint8_t algorithm, uint16_t flags)
 {
   DNSKEYRecordContent drc;
 
@@ -443,21 +468,6 @@ DNSKEYRecordContent makeDNSKEYFromDNSCryptoKeyEngine(const DNSCryptoKeyEngine* p
   drc.d_key = pk->getPublicKeyString();
 
   return drc;
-}
-
-int countLabels(const std::string& signQName)
-{
-  if(!signQName.empty()) {
-    int count=1;
-    for(string::const_iterator pos = signQName.begin(); pos != signQName.end() ; ++pos)
-      if(*pos == '.' && pos+1 != signQName.end())
-        count++;
-
-    if(boost::starts_with(signQName, "*."))
-      count--;
-    return count;
-  }
-  return 0;
 }
 
 uint32_t getStartOfWeek()
@@ -541,34 +551,6 @@ private:
   const std::string& d_str;
   std::string::size_type d_pos;
 };
-
-void decodeDERIntegerSequence(const std::string& input, vector<string>& output)
-{
-  output.clear();
-  DEREater de(input);
-  if(de.getByte() != 0x30) 
-    throw runtime_error("Not a DER sequence");
-  
-  unsigned int seqlen=de.getLength(); 
-  unsigned int startseq=de.getOffset();
-  unsigned int len;
-  string ret;
-  try {
-    for(;;) {
-      uint8_t kind = de.getByte();
-      if(kind != 0x02) 
-        throw runtime_error("DER Sequence contained non-INTEGER component: "+std::to_string(static_cast<unsigned int>(kind)) );
-      len = de.getLength();
-      ret = de.getBytes(len);
-      output.push_back(ret);
-    }
-  }
-  catch(DEREater::eof& eof)
-  {
-    if(de.getOffset() - startseq != seqlen)
-      throw runtime_error("DER Sequence ended before end of data");
-  }  
-}
 
 static string calculateHMAC(const std::string& key, const std::string& text, TSIGHashEnum hasher) {
 

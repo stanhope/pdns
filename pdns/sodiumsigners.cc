@@ -11,23 +11,22 @@ class SodiumED25519DNSCryptoKeyEngine : public DNSCryptoKeyEngine
 public:
   explicit SodiumED25519DNSCryptoKeyEngine(unsigned int algo) : DNSCryptoKeyEngine(algo)
   {}
-  string getName() const { return "Sodium ED25519"; }
-  void create(unsigned int bits);
-  storvector_t convertToISCVector() const;
-  std::string getPubKeyHash() const;
-  std::string sign(const std::string& hash) const;
-  std::string hash(const std::string& hash) const;
-  bool verify(const std::string& msg, const std::string& signature) const;
-  std::string getPublicKeyString() const;
-  int getBits() const;
-  void fromISCMap(DNSKEYRecordContent& drc, std::map<std::string, std::string>& stormap);
-  void fromPublicKeyString(const std::string& content);
-  void fromPEMString(DNSKEYRecordContent& drc, const std::string& raw)
+  string getName() const override { return "Sodium ED25519"; }
+  void create(unsigned int bits) override;
+  storvector_t convertToISCVector() const override;
+  std::string getPubKeyHash() const override;
+  std::string sign(const std::string& msg) const override;
+  bool verify(const std::string& msg, const std::string& signature) const override;
+  std::string getPublicKeyString() const override;
+  int getBits() const override;
+  void fromISCMap(DNSKEYRecordContent& drc, std::map<std::string, std::string>& stormap) override;
+  void fromPublicKeyString(const std::string& content) override;
+  void fromPEMString(DNSKEYRecordContent& drc, const std::string& raw) override
   {}
 
-  static DNSCryptoKeyEngine* maker(unsigned int algorithm)
+  static std::shared_ptr<DNSCryptoKeyEngine> maker(unsigned int algorithm)
   {
-    return new SodiumED25519DNSCryptoKeyEngine(algorithm);
+    return std::make_shared<SodiumED25519DNSCryptoKeyEngine>(algorithm);
   }
 
 private:
@@ -106,22 +105,12 @@ void SodiumED25519DNSCryptoKeyEngine::fromPublicKeyString(const std::string& inp
 
 std::string SodiumED25519DNSCryptoKeyEngine::sign(const std::string& msg) const
 {
-  string hash=this->hash(msg);
-  unsigned long long smlen = hash.length() + crypto_sign_ed25519_BYTES;
+  unsigned long long smlen = msg.length() + crypto_sign_ed25519_BYTES;
   std::unique_ptr<unsigned char[]> sm(new unsigned char[smlen]);
 
-  crypto_sign_ed25519(sm.get(), &smlen, (const unsigned char*)hash.c_str(), hash.length(), d_seckey);
+  crypto_sign_ed25519(sm.get(), &smlen, (const unsigned char*)msg.c_str(), msg.length(), d_seckey);
 
   return string((const char*)sm.get(), crypto_sign_ed25519_BYTES);
-}
-
-std::string SodiumED25519DNSCryptoKeyEngine::hash(const std::string& orig) const
-{
-  std::unique_ptr<unsigned char[]> out(new unsigned char[crypto_hash_sha512_BYTES]);
-
-  crypto_hash_sha512(out.get(), (const unsigned char*)orig.c_str(), orig.length());
-
-  return string((const char*)out.get(), crypto_hash_sha512_BYTES);
 }
 
 bool SodiumED25519DNSCryptoKeyEngine::verify(const std::string& msg, const std::string& signature) const
@@ -129,12 +118,11 @@ bool SodiumED25519DNSCryptoKeyEngine::verify(const std::string& msg, const std::
   if (signature.length() != crypto_sign_ed25519_BYTES)
     return false;
 
-  string hash=this->hash(msg);
-  unsigned long long smlen = hash.length() + crypto_sign_ed25519_BYTES;
+  unsigned long long smlen = msg.length() + crypto_sign_ed25519_BYTES;
   std::unique_ptr<unsigned char[]> sm(new unsigned char[smlen]);
 
   memcpy(sm.get(), signature.c_str(), crypto_sign_ed25519_BYTES);
-  memcpy(sm.get() + crypto_sign_ed25519_BYTES, hash.c_str(), hash.length());
+  memcpy(sm.get() + crypto_sign_ed25519_BYTES, msg.c_str(), msg.length());
 
   std::unique_ptr<unsigned char[]> m(new unsigned char[smlen]);
 

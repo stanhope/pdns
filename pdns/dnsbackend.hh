@@ -125,7 +125,7 @@ public:
   virtual ~DNSBackend(){};
 
   //! fills the soadata struct with the SOA details. Returns false if there is no SOA.
-  virtual bool getSOA(const DNSName &name, SOAData &soadata, DNSPacket *p=0);
+  virtual bool getSOA(const DNSName &name, SOAData &soadata);
 
   //! Calculates a SOA serial for the zone and stores it in the third argument.
   virtual bool calculateSOASerial(const DNSName& domain, const SOAData& sd, time_t& serial);
@@ -169,7 +169,7 @@ public:
   virtual void getAllDomains(vector<DomainInfo> *domains, bool include_disabled=false) { }
 
   /** Determines if we are authoritative for a zone, and at what level */
-  virtual bool getAuth(DNSPacket *p, SOAData *sd, const DNSName &target);
+  virtual bool getAuth(const DNSName &target, SOAData *sd);
 
   struct KeyData {
     std::string content;
@@ -268,7 +268,7 @@ public:
   }
 
   //! feeds a record to a zone, needs a call to startTransaction first
-  virtual bool feedRecord(const DNSResourceRecord &rr, string *ordername=0)
+  virtual bool feedRecord(const DNSResourceRecord &rr, const DNSName &ordername)
   {
     return false; // no problem!
   }

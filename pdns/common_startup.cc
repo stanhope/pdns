@@ -49,7 +49,6 @@ int avg_latency;
 TCPNameserver *TN;
 static vector<DNSDistributor*> g_distributors;
 vector<std::shared_ptr<UDPNameserver> > g_udpReceivers;
-AuthLua *LPE;
 
 ArgvMap &arg()
 {
@@ -159,6 +158,7 @@ void declareArguments()
 
   ::arg().set("trusted-notification-proxy", "IP address of incoming notification proxy")="";
   ::arg().set("slave-renotify", "If we should send out notifications for slaved updates")="no";
+  ::arg().set("forward-notify", "IP addresses to forward received notifications to regardless of master or slave settings")="";
 
   ::arg().set("default-ttl","Seconds a result is valid if not set otherwise")="3600";
   ::arg().set("max-tcp-connections","Maximum number of TCP connections")="20";
@@ -180,7 +180,6 @@ void declareArguments()
 
   ::arg().set("lua-prequery-script", "Lua script with prequery handler (DO NOT USE)")="";
   ::arg().set("lua-dnsupdate-policy-script", "Lua script with DNS update policy handler")="";
-  ::arg().set("experimental-lua-policy-script", "Lua script for the policy engine")="";
 
   ::arg().setSwitch("traceback-handler","Enable the traceback handler (Linux only)")="yes";
   ::arg().setSwitch("direct-dnskey","Fetch DNSKEY RRs from backend during DNSKEY synthesis")="no";
@@ -198,6 +197,7 @@ void declareArguments()
   ::arg().setSwitch("8bit-dns", "Allow 8bit dns queries")="no";
   ::arg().setSwitch("axfr-lower-serial", "Also AXFR a zone from a master with a lower serial")="no";
 
+  ::arg().set("lua-axfr-script", "Script to be used to edit incoming AXFRs")="";
   ::arg().set("xfr-max-received-mbytes", "Maximum number of megabytes received from an incoming XFR")="100";
 
   ::arg().set("tcp-fast-open", "Enable TCP Fast Open support on the listening sockets, using the supplied numerical value as the queue size")="0";
@@ -418,22 +418,9 @@ try
         cached.d.rd=P->d.rd; // copy in recursion desired bit
         cached.d.id=P->d.id;
         cached.commitD(); // commit d to the packet                        inlined
-
-        int policyres = PolicyDecision::PASS;
-        if(LPE)
-        {
-          // FIXME: cached does not have qdomainwild/qdomainzone because packetcache entries
-          // go through tostring/noparse
-          policyres = LPE->police(&question, &cached);
-        }
-
-        if (policyres == PolicyDecision::PASS) {
-          NS->send(&cached);   // answer it then                              inlined
-          diff=P->d_dt.udiff();
-          avg_latency=(int)(0.999*avg_latency+0.001*diff); // 'EWMA'
-        }
-        // FIXME implement truncate
-
+        NS->send(&cached); // answer it then                              inlined
+        diff=P->d_dt.udiff();
+        avg_latency=(int)(0.999*avg_latency+0.001*diff); // 'EWMA'
         continue;
       }
     }
@@ -545,13 +532,8 @@ void mainthread()
   if(::arg().mustDo("webserver") || ::arg().mustDo("api"))
     webserver.go();
 
-  if(::arg().mustDo("slave") || ::arg().mustDo("master"))
+  if(::arg().mustDo("slave") || ::arg().mustDo("master") || !::arg()["forward-notify"].empty())
     Communicator.go(); 
-
-  if(!::arg()["experimental-lua-policy-script"].empty()){
-    LPE=new AuthLua(::arg()["experimental-lua-policy-script"]);
-    L<<Logger::Warning<<"Loaded Lua policy script "<<::arg()["experimental-lua-policy-script"]<<endl;
-  }
 
   if(TN)
     TN->go(); // tcp nameserver launch

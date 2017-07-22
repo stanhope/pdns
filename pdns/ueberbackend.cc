@@ -98,6 +98,15 @@ bool UeberBackend::createDomain(const DNSName &domain)
   return false;
 }
 
+bool UeberBackend::doesDNSSEC()
+{
+  for(auto* db :  backends) {
+    if(db->doesDNSSEC())
+      return true;
+  }
+  return false;
+}
+
 bool UeberBackend::addDomainKey(const DNSName& name, const DNSBackend::KeyData& key, int64_t& id)
 {
   id = -1;
@@ -246,7 +255,7 @@ void UeberBackend::getUpdatedMasters(vector<DomainInfo>* domains)
   }
 }
 
-bool UeberBackend::getAuth(DNSPacket *p, SOAData *sd, const DNSName &target)
+bool UeberBackend::getAuth(const DNSName &target, const QType& qtype, SOAData* sd, bool cachedOk)
 {
   bool found = false;
   int cstat;
@@ -255,7 +264,7 @@ bool UeberBackend::getAuth(DNSPacket *p, SOAData *sd, const DNSName &target)
   do {
 
     // Check cache
-    if(sd->db != (DNSBackend *)-1 && (d_cache_ttl || d_negcache_ttl)) {
+    if(cachedOk && (d_cache_ttl || d_negcache_ttl)) {
       d_question.qtype = QType::SOA;
       d_question.qname = choppedOff;
       d_question.zoneId = -1;
@@ -298,7 +307,7 @@ bool UeberBackend::getAuth(DNSPacket *p, SOAData *sd, const DNSName &target)
           break;
         } else {
           DLOG(L<<Logger::Error<<"lookup: "<<choppedOff<<endl);
-          if((*i)->getAuth(p, sd, choppedOff)) {
+          if((*i)->getAuth(choppedOff, sd)) {
             DLOG(L<<Logger::Error<<"got: "<<sd->qname<<endl);
             j->first = sd->qname.wirelength();
             j->second = *sd;
@@ -338,7 +347,7 @@ bool UeberBackend::getAuth(DNSPacket *p, SOAData *sd, const DNSName &target)
     }
 
 found:
-    if(found == (p->qtype == QType::DS)){
+    if(found == (qtype == QType::DS)){
       DLOG(L<<Logger::Error<<"found: "<<sd->qname<<endl);
       return true;
     } else {
@@ -350,7 +359,7 @@ found:
   return found;
 }
 
-bool UeberBackend::getSOA(const DNSName &domain, SOAData &sd, DNSPacket *p)
+bool UeberBackend::getSOA(const DNSName &domain, SOAData &sd)
 {
   d_question.qtype=QType::SOA;
   d_question.qname=domain;
@@ -369,17 +378,17 @@ bool UeberBackend::getSOA(const DNSName &domain, SOAData &sd, DNSPacket *p)
   }
 
   // not found in neg. or pos. cache, look it up
-  return getSOAUncached(domain, sd, p);
+  return getSOAUncached(domain, sd);
 }
 
-bool UeberBackend::getSOAUncached(const DNSName &domain, SOAData &sd, DNSPacket *p)
+bool UeberBackend::getSOAUncached(const DNSName &domain, SOAData &sd)
 {
   d_question.qtype=QType::SOA;
   d_question.qname=domain;
   d_question.zoneId=-1;
 
   for(vector<DNSBackend *>::const_iterator i=backends.begin();i!=backends.end();++i)
-    if((*i)->getSOA(domain, sd, p)) {
+    if((*i)->getSOA(domain, sd)) {
       if( d_cache_ttl ) {
         DNSZoneRecord rr;
         rr.dr.d_name = sd.qname;

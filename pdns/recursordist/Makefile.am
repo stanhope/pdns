@@ -54,20 +54,28 @@ EXTRA_DIST = \
 	mtasker.cc \
 	mtasker_fcontext.cc mtasker_ucontext.cc \
 	opensslsigners.hh opensslsigners.cc \
-	pdns_recursor.1.md \
 	portsmplexer.cc \
-	rec_control.1.md \
 	rrd/* \
 	html incfiles \
-	pdns-recursor.service.in
+	test_libcrypto \
+	pdns-recursor.service.in \
+	RECURSOR-MIB.txt
+
+dist-hook:
+	for file in $$(find $(distdir)/docs -type l); do \
+	  t=`stat -c%N $$file | awk '{print $$NF}' | sed "s/'//g"` ; \
+	  ln -fs ../$$t $$file; \
+	done
 
 sbin_PROGRAMS = pdns_recursor
 bin_PROGRAMS = rec_control
 
+TESTS=test_libcrypto
+
 if UNIT_TESTS
 noinst_PROGRAMS = testrunner
 TESTS_ENVIRONMENT = env BOOST_TEST_LOG_LEVEL=message SRCDIR='$(srcdir)'
-TESTS=testrunner
+TESTS += testrunner
 else
 check-local:
 	@echo "Unit tests are not enabled"
@@ -92,7 +100,6 @@ pdns_recursor_SOURCES = \
 	dnssecinfra.hh dnssecinfra.cc \
 	dnsseckeeper.hh \
 	dnswriter.cc dnswriter.hh \
-	ecs.cc \
 	ednsoptions.cc ednsoptions.hh \
 	ednssubnet.cc ednssubnet.hh \
 	filterpo.cc filterpo.hh \
@@ -187,21 +194,23 @@ testrunner_SOURCES = \
 	dnsparser.hh dnsparser.cc \
 	dnsrecords.cc \
 	dnssecinfra.cc \
+	dnsseckeeper.hh \
 	dnswriter.cc dnswriter.hh \
 	ednscookies.cc ednscookies.hh \
-	ecs.cc \
 	ednsoptions.cc ednsoptions.hh \
 	ednssubnet.cc ednssubnet.hh \
 	filterpo.cc filterpo.hh \
 	gettime.cc gettime.hh \
 	gss_context.cc gss_context.hh \
 	iputils.cc iputils.hh \
+	ixfr.cc ixfr.hh \
 	logger.cc logger.hh \
 	misc.cc misc.hh \
 	negcache.hh negcache.cc \
 	namespaces.hh \
 	nsecrecords.cc \
 	pdnsexception.hh \
+	opensslsigners.cc opensslsigners.hh \
 	protobuf.cc protobuf.hh \
 	qtype.cc qtype.hh \
 	randomhelper.cc \
@@ -218,6 +227,7 @@ testrunner_SOURCES = \
 	test-arguments_cc.cc \
 	test-base32_cc.cc \
 	test-base64_cc.cc \
+	test-common.hh \
 	test-dnsrecordcontent.cc \
 	test-dns_random_hh.cc \
 	test-dnsname_cc.cc \
@@ -225,14 +235,17 @@ testrunner_SOURCES = \
 	test-dnsrecords_cc.cc \
 	test-ednsoptions_cc.cc \
 	test-iputils_hh.cc \
+	test-ixfr_cc.cc \
 	test-misc_hh.cc \
 	test-nmtree.cc \
 	test-negcache_cc.cc \
 	test-rcpgenerator_cc.cc \
 	test-recpacketcache_cc.cc \
+	test-recursorcache_cc.cc \
 	test-syncres_cc.cc \
 	test-tsig.cc \
 	testrunner.cc \
+	tsigverifier.cc tsigverifier.hh \
 	unix_utility.cc \
 	validate.cc validate.hh \
 	validate-recursor.cc validate-recursor.hh \
@@ -258,6 +271,15 @@ if LIBSODIUM
 pdns_recursor_SOURCES += \
 	sodiumsigners.cc
 pdns_recursor_LDADD += $(LIBSODIUM_LIBS)
+testrunner_SOURCES += \
+	sodiumsigners.cc
+testrunner_LDADD += $(LIBSODIUM_LIBS)
+endif
+
+if LIBDECAF
+pdns_recursor_SOURCES += \
+	decafsigners.cc
+pdns_recursor_LDADD += $(LIBDECAF_LIBS)
 endif
 
 if MALLOC_TRACE
@@ -335,19 +357,49 @@ recursor.conf-dist: pdns_recursor
 MANPAGES=pdns_recursor.1 \
 	 rec_control.1
 
-if HAVE_PANDOC
-  dist_man_MANS=$(MANPAGES)
-endif
-if HAVE_MANPAGES
-  dist_man_MANS=$(MANPAGES)
-endif
+dist_man_MANS=$(MANPAGES)
 
-if HAVE_PANDOC
-$(MANPAGES): %: %.md
-	$(AM_V_GEN)$(PANDOC) -s -t man $< -o $@
-else
+if HAVE_VIRTUALENV
+if !HAVE_MANPAGES
+$(MANPAGES): %.1: docs/manpages/%.rst .venv
+	.venv/bin/python -msphinx -b man docs . $<
+endif # if !HAVE_MANPAGES
+
+.venv: docs/requirements.txt
+	virtualenv .venv
+	.venv/bin/pip install -U pip setuptools setuptools-git
+	.venv/bin/pip install -r docs/requirements.txt
+
+html-docs: docs/** .venv
+	.venv/bin/python -msphinx -b html docs html-docs
+
+latex/PowerDNS-Recursor.pdf: docs/** .venv
+	.venv/bin/python -msphinx -M latexpdf docs .
+
+PowerDNS-Recursor.pdf: latex/PowerDNS-Recursor.pdf
+	mv $< $@
+
+html-docs.tar.bz2: html-docs
+	tar cjf $@ $<
+
+all-docs: PowerDNS-Recursor.pdf html-docs html-docs.tar.bz2
+
+upload-docs: all-docs
+	rsync -crv --delete --no-p --chmod=g=rwX --exclude '*~' ./html-docs/ web1.powerdns.com:/srv/www/doc.powerdns.com/recursor/
+	rsync -crv --no-p --chmod=g=rwX --exclude '*~' ./html-docs.tar.bz2 web1.powerdns.com:/srv/www/doc.powerdns.com/recursor/
+	rsync -crv --no-p --chmod=g=rwX --exclude '*~' ./PowerDNS-Recursor.pdf web1.powerdns.com:/srv/www/doc.powerdns.com/recursor/
+
+else # if HAVE_VIRTUALENV
 $(MANPAGES):
-	echo "You need pandoc to generate the manpages"
+	echo "You need virtualenv to generate the manpages"
+	exit 1
+
+PowerDNS-Recursor.pdf:
+	echo "You need virtualenv to generate the PDF"
+	exit 1
+
+html-docs:
+	echo "You need virtualenv to generate the HTML docs"
 	exit 1
 endif
 

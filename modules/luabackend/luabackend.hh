@@ -54,17 +54,17 @@ public:
 
     LUABackend(const string &suffix="");
     ~LUABackend();
-    bool list(const DNSName &target, int domain_id, bool include_disabled=false);
-    void lookup(const QType &qtype, const DNSName &qname, DNSPacket *p, int domain_id);
-    bool get(DNSResourceRecord &rr);
+    bool list(const DNSName &target, int domain_id, bool include_disabled=false) override;
+    void lookup(const QType &qtype, const DNSName &qname, DNSPacket *p, int domain_id) override;
+    bool get(DNSResourceRecord &rr) override;
     //! fills the soadata struct with the SOA details. Returns false if there is no SOA.
-    bool getSOA(const string &name, SOAData &soadata, DNSPacket *p=0);
+    bool getSOA(const DNSName &name, SOAData &soadata) override;
 
 
 //  MASTER BACKEND
 
-    void getUpdatedMasters(vector<DomainInfo>* domains);
-    void setNotified(int id, uint32_t serial);
+    void getUpdatedMasters(vector<DomainInfo>* domains) override;
+    void setNotified(uint32_t id, uint32_t serial) override;
 
 
 //  SLAVE BACKEND
@@ -77,7 +77,7 @@ public:
     bool startTransaction(const DNSName &qname, int id) override;
     bool commitTransaction() override;
     bool abortTransaction() override;
-    bool feedRecord(const DNSResourceRecord &rr, string *ordername=0) override;
+    bool feedRecord(const DNSResourceRecord &rr, const DNSName &ordername) override;
 
 
 //  SUPERMASTER BACKEND

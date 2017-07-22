@@ -78,9 +78,9 @@ bool g_syslog{true};
 
 GlobalStateHolder<NetmaskGroup> g_ACL;
 string g_outputBuffer;
-vector<std::tuple<ComboAddress, bool, bool, int>> g_locals;
+vector<std::tuple<ComboAddress, bool, bool, int, string>> g_locals;
 #ifdef HAVE_DNSCRYPT
-std::vector<std::tuple<ComboAddress,DnsCryptContext,bool, int>> g_dnsCryptLocals;
+std::vector<std::tuple<ComboAddress,DnsCryptContext,bool, int, string>> g_dnsCryptLocals;
 #endif
 #ifdef HAVE_EBPF
 shared_ptr<BPFFilter> g_defaultBPFFilter;
@@ -813,23 +813,40 @@ catch(...)
   return 0;
 }
 
-void spoofResponseFromString(DNSQuestion& dq, const string& spoofContent)
+static void spoofResponseFromString(DNSQuestion& dq, const string& spoofContent)
 {
   string result;
-  try {
-    ComboAddress spoofAddr(spoofContent);
-    SpoofAction sa({spoofAddr});
-    sa(&dq, &result);
-  }
-  catch(PDNSException &e) {
-    SpoofAction sa(spoofContent); // CNAME then
+
+  std::vector<std::string> addrs;
+  stringtok(addrs, spoofContent, " ,");
+
+  if (addrs.size() == 1) {
+    try {
+      ComboAddress spoofAddr(spoofContent);
+      SpoofAction sa({spoofAddr});
+      sa(&dq, &result);
+    }
+    catch(const PDNSException &e) {
+      SpoofAction sa(spoofContent); // CNAME then
+      sa(&dq, &result);
+    }
+  } else {
+    std::vector<ComboAddress> cas;
+    for (const auto& addr : addrs) {
+      try {
+        cas.push_back(ComboAddress(addr));
+      }
+      catch (...) {
+      }
+    }
+    SpoofAction sa(cas);
     sa(&dq, &result);
   }
 }
 
 bool processQuery(LocalStateHolder<NetmaskTree<DynBlock> >& localDynNMGBlock, 
                   LocalStateHolder<SuffixMatchTree<DynBlock> >& localDynSMTBlock,
-                  LocalStateHolder<vector<pair<std::shared_ptr<DNSRule>, std::shared_ptr<DNSAction> > > >& localRulactions, blockfilter_t blockFilter, DNSQuestion& dq, string& poolname, int* delayMsec, const struct timespec& now)
+                  LocalStateHolder<vector<pair<std::shared_ptr<DNSRule>, std::shared_ptr<DNSAction> > > >& localRulactions, DNSQuestion& dq, string& poolname, int* delayMsec, const struct timespec& now)
 {
   {
     WriteLock wl(&g_rings.queryLock);
@@ -857,10 +874,20 @@ bool processQuery(LocalStateHolder<NetmaskTree<DynBlock> >& localDynNMGBlock,
     if(now < got->second.until) {
       g_stats.dynBlocked++;
       got->second.blocks++;
-      if (g_dynBlockAction == DNSAction::Action::Refused) {
+      DNSAction::Action action = got->second.action;
+      if (action == DNSAction::Action::None) {
+        action = g_dynBlockAction;
+      }
+      if (action == DNSAction::Action::Refused) {
         vinfolog("Query from %s refused because of dynamic block", dq.remote->toStringWithPort());
         dq.dh->rcode = RCode::Refused;
         dq.dh->qr=true;
+        return true;
+      }
+      else if (action == DNSAction::Action::Truncate && !dq.tcp) {
+        vinfolog("Query from %s truncated because of dynamic block", dq.remote->toStringWithPort());
+        dq.dh->tc = true;
+        dq.dh->qr = true;
         return true;
       }
       else {
@@ -874,25 +901,26 @@ bool processQuery(LocalStateHolder<NetmaskTree<DynBlock> >& localDynNMGBlock,
     if(now < got->until) {
       g_stats.dynBlocked++;
       got->blocks++;
-      if (g_dynBlockAction == DNSAction::Action::Refused) {
+      DNSAction::Action action = got->action;
+      if (action == DNSAction::Action::None) {
+        action = g_dynBlockAction;
+      }
+      if (action == DNSAction::Action::Refused) {
         vinfolog("Query from %s for %s refused because of dynamic block", dq.remote->toStringWithPort(), dq.qname->toString());
         dq.dh->rcode = RCode::Refused;
         dq.dh->qr=true;
+        return true;
+      }
+      else if (action == DNSAction::Action::Truncate && !dq.tcp) {
+        vinfolog("Query from %s for %s truncated because of dynamic block", dq.remote->toStringWithPort(), dq.qname->toString());
+        dq.dh->tc = true;
+        dq.dh->qr = true;
         return true;
       }
       else {
         vinfolog("Query from %s for %s dropped because of dynamic block", dq.remote->toStringWithPort(), dq.qname->toString());
         return false;
       }
-    }
-  }
-
-  if(blockFilter) {
-    std::lock_guard<std::mutex> lock(g_luamutex);
-
-    if(blockFilter(&dq)) {
-      g_stats.blockFilter++;
-      return false;
     }
   }
 
@@ -925,6 +953,11 @@ bool processQuery(LocalStateHolder<NetmaskTree<DynBlock> >& localDynNMGBlock,
         break;
       case DNSAction::Action::Spoof:
         spoofResponseFromString(dq, ruleresult);
+        return true;
+        break;
+      case DNSAction::Action::Truncate:
+        dq.dh->tc = true;
+        dq.dh->qr = true;
         return true;
         break;
       case DNSAction::Action::HeaderModify:
@@ -1075,13 +1108,6 @@ try
   boost::uuids::random_generator uuidGenerator;
 #endif
 
-  blockfilter_t blockFilter = 0;
-  {
-    std::lock_guard<std::mutex> lock(g_luamutex);
-    auto candidate = g_lua.readVariable<boost::optional<blockfilter_t> >("blockFilter");
-    if(candidate)
-      blockFilter = *candidate;
-  }
   auto acl = g_ACL.getLocal();
   auto localPolicy = g_policy.getLocal();
   auto localRulactions = g_rulactions.getLocal();
@@ -1200,7 +1226,7 @@ try
       gettime(&now);
       gettime(&realTime, true);
 
-      if (!processQuery(localDynNMGBlock, localDynSMTBlock, localRulactions, blockFilter, dq, poolname, &delayMsec, now))
+      if (!processQuery(localDynNMGBlock, localDynSMTBlock, localRulactions, dq, poolname, &delayMsec, now))
       {
         continue;
       }
@@ -1598,7 +1624,7 @@ void* healthChecksThread()
             try {
               SConnect(dss->fd, dss->remote);
               dss->connected = true;
-              dss->tid = move(thread(responderThread, dss));
+              dss->tid = thread(responderThread, dss);
             }
             catch(const std::runtime_error& error) {
               infolog("Error connecting to new server with address %s: %s", dss->remote.toStringWithPort(), error.what());
@@ -2004,11 +2030,11 @@ try
   if(g_cmdLine.locals.size()) {
     g_locals.clear();
     for(auto loc : g_cmdLine.locals)
-      g_locals.push_back(std::make_tuple(ComboAddress(loc, 53), true, false, 0));
+      g_locals.push_back(std::make_tuple(ComboAddress(loc, 53), true, false, 0, ""));
   }
   
   if(g_locals.empty())
-    g_locals.push_back(std::make_tuple(ComboAddress("127.0.0.1", 53), true, false, 0));
+    g_locals.push_back(std::make_tuple(ComboAddress("127.0.0.1", 53), true, false, 0, ""));
 
   g_configurationDone = true;
 
@@ -2034,11 +2060,24 @@ try
       setsockopt(cs->udpFD, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof(one));
 #endif
     }
+
     if (std::get<2>(local)) {
 #ifdef SO_REUSEPORT
       SSetsockopt(cs->udpFD, SOL_SOCKET, SO_REUSEPORT, 1);
 #else
       warnlog("SO_REUSEPORT has been configured on local address '%s' but is not supported", std::get<0>(local).toStringWithPort());
+#endif
+    }
+
+    const std::string& itf = std::get<4>(local);
+    if (!itf.empty()) {
+#ifdef SO_BINDTODEVICE
+      int res = setsockopt(cs->udpFD, SOL_SOCKET, SO_BINDTODEVICE, itf.c_str(), itf.length());
+      if (res != 0) {
+        warnlog("Error setting up the interface on local address '%s': %s", std::get<0>(local).toStringWithPort(), strerror(errno));
+      }
+#else
+      warnlog("An interface has been configured on local address '%s' but SO_BINDTODEVICE is not supported", std::get<0>(local).toStringWithPort());
 #endif
     }
 
@@ -2085,6 +2124,19 @@ try
       SSetsockopt(cs->tcpFD, SOL_SOCKET, SO_REUSEPORT, 1);
     }
 #endif
+
+    const std::string& itf = std::get<4>(local);
+    if (!itf.empty()) {
+#ifdef SO_BINDTODEVICE
+      int res = setsockopt(cs->tcpFD, SOL_SOCKET, SO_BINDTODEVICE, itf.c_str(), itf.length());
+      if (res != 0) {
+        warnlog("Error setting up the interface on local address '%s': %s", std::get<0>(local).toStringWithPort(), strerror(errno));
+      }
+#else
+      warnlog("An interface has been configured on local address '%s' but SO_BINDTODEVICE is not supported", std::get<0>(local).toStringWithPort());
+#endif
+    }
+
 #ifdef HAVE_EBPF
     if (g_defaultBPFFilter) {
       cs->attachFilter(g_defaultBPFFilter);
@@ -2127,6 +2179,19 @@ try
       warnlog("SO_REUSEPORT has been configured on local address '%s' but is not supported", std::get<0>(dcLocal).toStringWithPort());
 #endif
     }
+
+    const std::string& itf = std::get<4>(dcLocal);
+    if (!itf.empty()) {
+#ifdef SO_BINDTODEVICE
+      int res = setsockopt(cs->udpFD, SOL_SOCKET, SO_BINDTODEVICE, itf.c_str(), itf.length());
+      if (res != 0) {
+        warnlog("Error setting up the interface on local address '%s': %s", std::get<0>(dcLocal).toStringWithPort(), strerror(errno));
+      }
+#else
+      warnlog("An interface has been configured on local address '%s' but SO_BINDTODEVICE is not supported", std::get<0>(dcLocal).toStringWithPort());
+#endif
+    }
+
 #ifdef HAVE_EBPF
     if (g_defaultBPFFilter) {
       cs->attachFilter(g_defaultBPFFilter);
@@ -2153,12 +2218,25 @@ try
       warnlog("TCP Fast Open has been configured on local address '%s' but is not supported", std::get<0>(dcLocal).toStringWithPort());
 #endif
     }
+
 #ifdef SO_REUSEPORT
     /* no need to warn again if configured but support is not available, we already did for UDP */
     if (std::get<2>(dcLocal)) {
       SSetsockopt(cs->tcpFD, SOL_SOCKET, SO_REUSEPORT, 1);
     }
 #endif
+
+    if (!itf.empty()) {
+#ifdef SO_BINDTODEVICE
+      int res = setsockopt(cs->tcpFD, SOL_SOCKET, SO_BINDTODEVICE, itf.c_str(), itf.length());
+      if (res != 0) {
+        warnlog("Error setting up the interface on local address '%s': %s", std::get<0>(dcLocal).toStringWithPort(), strerror(errno));
+      }
+#else
+      warnlog("An interface has been configured on local address '%s' but SO_BINDTODEVICE is not supported", std::get<0>(dcLocal).toStringWithPort());
+#endif
+    }
+
     if(cs->local.sin4.sin_family == AF_INET6) {
       SSetsockopt(cs->tcpFD, IPPROTO_IPV6, IPV6_V6ONLY, 1);
     }
@@ -2229,7 +2307,7 @@ try
       auto ret=std::make_shared<DownstreamState>(ComboAddress(address, 53));
       addServerToPool(localPools, "", ret);
       if (ret->connected) {
-        ret->tid = move(thread(responderThread, ret));
+        ret->tid = thread(responderThread, ret);
       }
       g_dstates.modify([ret](servers_t& servers) { servers.push_back(ret); });
     }
