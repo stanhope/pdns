@@ -145,6 +145,8 @@ private:
     DNSName qname;
     int zoneId;
     QType qtype;
+    int proxyLen;
+    char* proxyInfo[128];
   }d_question;
 
   unsigned int d_cache_ttl, d_negcache_ttl;

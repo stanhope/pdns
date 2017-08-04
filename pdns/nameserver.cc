@@ -280,11 +280,52 @@ UDPNameserver::UDPNameserver( bool additional_socket )
     L<<Logger::Critical<<"PDNS is deaf and mute! Not listening on any interfaces"<<endl;    
 }
 
+#define HEXDUMP_COLS 16
+void hexdump(const void *mem, unsigned int len)
+{
+  unsigned int i, j;
+  for(i = 0; i < len + ((len % HEXDUMP_COLS) ? (HEXDUMP_COLS - len % HEXDUMP_COLS) : 0); i++)
+    {
+      if(i % HEXDUMP_COLS == 0)
+	{
+	  printf("0x%06x: ", i);
+	}
+      if(i < len)
+	{
+	  printf("%02x ", 0xFF & ((char*)mem)[i]);
+	}
+      else
+	{
+	  printf("   ");
+	}
+      if(i % HEXDUMP_COLS == (HEXDUMP_COLS - 1))
+	{
+	  for(j = i - (HEXDUMP_COLS - 1); j <= i; j++)
+	    {
+	      if(j >= len)
+		{
+		  putchar(' ');
+		}
+	      else if(isprint(((char*)mem)[j]))
+		{
+		  putchar(0xFF & ((char*)mem)[j]);
+		}
+	      else
+		{
+		  putchar('.');
+		}
+	    }
+	  putchar('\n');
+	}
+    }
+}
+
 void UDPNameserver::send(DNSPacket *p)
 {
   string buffer=p->getString();
+  hexdump(buffer.c_str(), 100);
   g_rs.submitResponse(*p, true);
-
+  
   struct msghdr msgh;
   struct iovec iov;
   char cbuf[256];
@@ -386,6 +427,5 @@ DNSPacket *UDPNameserver::receive(DNSPacket *prefilled)
       delete packet;
     return 0; // unable to parse
   }
-  
   return packet;
 }

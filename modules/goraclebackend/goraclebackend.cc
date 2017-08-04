@@ -92,7 +92,9 @@ public:
     declare(suffix, "basic-query", "Basic query", record_query+" disabled=0 and type=:qtype and name=:qname");
     declare(suffix, "id-query", "Basic with ID query", record_query+" disabled=0 and type=:qtype and name=:qname and domain_id=:domain_id");
     declare(suffix, "any-query", "Any query", record_query+" disabled=0 and name=:qname");
+
     declare(suffix, "any-id-query", "Any with ID query", record_query+" disabled=0 and name=:qname and domain_id=:domain_id");
+    declare(suffix, "tenant-any-id-query", "Tenant Any with ID query", record_query+" disabled=0 and name=:qname and tenant=:tenant and domain_id=:domain_id");
 
     declare(suffix, "list-query", "AXFR query", record_query+" (disabled=0 OR disabled=:include_disabled) and domain_id=:domain_id order by name, type");
     declare(suffix, "list-subzone-query", "Subzone listing", record_query+" disabled=0 and (name=:zone OR name like :wildzone) and domain_id=:domain_id");
@@ -107,7 +109,7 @@ public:
     declare(suffix, "info-all-slaves-query", "","select id,name,master,last_check from domains where type='SLAVE'");
     declare(suffix, "supermaster-query", "", "select account from supermasters where ip=:ip and nameserver=:nameserver");
     declare(suffix, "supermaster-name-to-ips", "", "select ip,account from supermasters where nameserver=:nameserver and account=:account");
-    declare(suffix, "insert-zone-query", "", "insert into domains (id,type,name,master,account,last_check_notified_serial) values(domains_id_sequence.nextval,:type,:domain,:masters,:account, null, null)");
+    declare(suffix, "insert-zone-query", "", "insert into domains (id,type,name,master,account,last_check,notified_serial) values(domains_id_sequence.nextval,:type,:domain,:masters,:account, null, null)");
     declare(suffix, "insert-record-query", "", "insert into records (id,content,ttl,prio,type,domain_id,disabled,name,ordername,auth,change_date) values (records_id_sequence.nextval,:content,:ttl,:priority,:qtype,:domain_id,:disabled,:qname,:ordername || ' ',:auth, null)");
     declare(suffix, "insert-empty-non-terminal-order-query", "insert empty non-terminal in zone", "insert into records (id,type,domain_id,disabled,name,ordername,auth,ttl,prio,change_date,content) values (records_id_sequence.nextval,null,:domain_id,0,:qname,:ordername,:auth,null,null,null,null)");
 
@@ -150,7 +152,7 @@ public:
     declare(suffix, "delete-tsig-key-query","", "delete from tsigkeys where name=:key_name");
     declare(suffix, "get-tsig-keys-query","", "select name,algorithm, secret from tsigkeys");
 
-    declare(suffix, "get-all-domains-query", "Retrieve all domains", "select domains.id, domains.name, records.content, domains.type, domains.master, domains.notified_serial, domains.last_check, domain.account from domains LEFT JOIN records ON records.domain_id=domains.id AND records.type='SOA' AND records.name=domains.name WHERE records.disabled=0 OR records.disabled=:include_disabled");
+    declare(suffix, "get-all-domains-query", "Retrieve all domains", "select domains.id, domains.name, records.content, domains.type, domains.master, domains.notified_serial, domains.last_check, domains.account from domains LEFT JOIN records ON records.domain_id=domains.id AND records.type='SOA' AND records.name=domains.name WHERE records.disabled=0 OR records.disabled=:include_disabled");
 
     declare(suffix, "list-comments-query", "", "SELECT domain_id,name,type,modified_at,account,\"comment\" FROM comments WHERE domain_id=:domain_id");
     declare(suffix, "insert-comment-query", "", "INSERT INTO comments (id, domain_id, name, type, modified_at, account, \"comment\") VALUES (comments_id_sequence.nextval, :domain_id, :qname, :qtype, :modified_at, :account, :content)");

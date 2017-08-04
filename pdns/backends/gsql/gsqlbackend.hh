@@ -53,9 +53,11 @@ public:
     if (d_db) {
       d_db->setLog(::arg().mustDo("query-logging"));
       d_NoIdQuery_stmt = d_db->prepare(d_NoIdQuery, 2);
+      d_TenantNoIdQuery_stmt = d_db->prepare(d_TenantNoIdQuery, 3);
       d_IdQuery_stmt = d_db->prepare(d_IdQuery, 3);
       d_ANYNoIdQuery_stmt = d_db->prepare(d_ANYNoIdQuery, 1);
       d_ANYIdQuery_stmt = d_db->prepare(d_ANYIdQuery, 2);
+      d_TenantANYIdQuery_stmt = d_db->prepare(d_TenantANYIdQuery, 3);
       d_listQuery_stmt = d_db->prepare(d_listQuery, 2);
       d_listSubZoneQuery_stmt = d_db->prepare(d_listSubZoneQuery, 3);
       d_MasterOfDomainsZoneQuery_stmt = d_db->prepare(d_MasterOfDomainsZoneQuery, 1);
@@ -120,9 +122,11 @@ public:
   
   void freeStatements() {
     release(&d_NoIdQuery_stmt);
+    release(&d_TenantNoIdQuery_stmt);
     release(&d_IdQuery_stmt);
     release(&d_ANYNoIdQuery_stmt);
     release(&d_ANYIdQuery_stmt);
+    release(&d_TenantANYIdQuery_stmt);
     release(&d_listQuery_stmt);
     release(&d_listSubZoneQuery_stmt);
     release(&d_MasterOfDomainsZoneQuery_stmt);
@@ -270,9 +274,11 @@ private:
   SSqlStatement::result_t d_result;
 
   string d_NoIdQuery;
+  string d_TenantNoIdQuery;
   string d_IdQuery;
   string d_ANYNoIdQuery;
   string d_ANYIdQuery;
+  string d_TenantANYIdQuery;
 
   string d_listQuery;
   string d_listSubZoneQuery;
@@ -345,9 +351,11 @@ private:
   SSqlStatement* d_query_stmt;
 
   SSqlStatement* d_NoIdQuery_stmt;
+  SSqlStatement* d_TenantNoIdQuery_stmt;
   SSqlStatement* d_IdQuery_stmt;
   SSqlStatement* d_ANYNoIdQuery_stmt;
   SSqlStatement* d_ANYIdQuery_stmt;
+  SSqlStatement* d_TenantANYIdQuery_stmt;
   SSqlStatement* d_listQuery_stmt;
   SSqlStatement* d_listSubZoneQuery_stmt;
   SSqlStatement* d_MasterOfDomainsZoneQuery_stmt;

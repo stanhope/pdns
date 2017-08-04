@@ -131,6 +131,7 @@ DNSPacket::DNSPacket(const DNSPacket &orig)
 
   d_isQuery = orig.d_isQuery;
   d_hash = orig.d_hash;
+  d_proxyLen = 0;
 }
 
 void DNSPacket::setRcode(int v)
@@ -419,6 +420,11 @@ DNSPacket *DNSPacket::replyPacket() const
     r->d_tsigtimersonly = d_tsigtimersonly;
   }
   r->d_havetsig = d_havetsig;
+  r->d_proxyLen = d_proxyLen;
+  if (d_proxyLen > 0) {
+    memcpy(r->proxyInfo, r->proxyInfo, d_proxyLen);
+    r->proxyInfo[d_proxyLen] = 0;
+  }
   return r;
 }
 
@@ -528,6 +534,16 @@ bool DNSPacket::getTKEYRecord(TKEYRecordContent *tr, DNSName *keyname) const
 int DNSPacket::parse(const char *mesg, size_t length)
 try
 {
+  if ((int)mesg[0] == -1) {
+    d_proxyLen = (int)mesg[1];
+    memcpy(proxyInfo, mesg+2, d_proxyLen);
+    proxyInfo[d_proxyLen] = 0;
+    mesg += (d_proxyLen + 2);
+    
+  } else {
+    d_proxyLen = 0;
+  }
+
   d_rawpacket.assign(mesg,length); 
   d_wrapped=true;
   if(length < 12) { 

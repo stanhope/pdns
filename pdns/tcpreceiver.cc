@@ -344,6 +344,12 @@ void *TCPNameserver::doConnection(void *data)
         continue;
       }
 
+      if (packet->d_proxyLen) {
+	      fprintf(stdout, "TCP Namesever parsed packet -- PROXY INFO: %s\n", packet->proxyInfo+2);
+      } else {
+	      fprintf(stdout, "TCP Namesever parsed packet -- NO PROXY INFO\n");
+      }
+  
       shared_ptr<DNSPacket> reply; 
       shared_ptr<DNSPacket> cached= shared_ptr<DNSPacket>(new DNSPacket(false));
       if(logDNSQueries)  {
@@ -803,11 +809,6 @@ int TCPNameserver::doAXFR(const DNSName &target, shared_ptr<DNSPacket> q, int ou
         L<<Logger::Warning<<"Zone '"<<target<<"' contains out-of-zone data '"<<zrr.dr.d_name<<"|"<<DNSRecordContent::NumberToType(zrr.dr.d_type)<<"', ignoring"<<endl;
     }
   }
-
-  // Group records by name and type, signpipe stumbles over interrupted rrsets
-  sort(zrrs.begin(), zrrs.end(), [](const DNSZoneRecord& a, const DNSZoneRecord& b) {
-    return tie(a.dr.d_name, a.dr.d_type) < tie(b.dr.d_name, b.dr.d_type);
-  });
 
   if(rectify) {
     // set auth

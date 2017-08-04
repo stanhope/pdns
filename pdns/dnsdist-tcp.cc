@@ -212,15 +212,9 @@ void cleanupClosedTCPConnections(std::map<ComboAddress,int>& sockets)
   }
 }
 
-static double current_time(void) {
-	struct timeval tv;
-	if (gettimeofday(&tv, 0) < 0 )
-		return 0;
-	double now = tv.tv_sec + tv.tv_usec / 1e6;
-	return now;
-}
-
+extern double current_time(void);
 extern void hexdump(void *mem, unsigned int len);
+extern void lookupDstMetaData(uint32_t dst, char* destination, char* info);
 
 std::shared_ptr<TCPClientCollection> g_tcpclientthreads;
 
@@ -345,7 +339,8 @@ void* tcpClientThread(int pipefd)
 	struct sockaddr boundSockAddr;
 	socklen_t lenSockAddr = sizeof(struct sockaddr);
 	if (getsockname(ci.fd, &boundSockAddr, &lenSockAddr) == -1) {
-		fprintf(stdout, "ACCEPT TCP getsockname() failed\n");
+	  //// if (getsockname(remote.sin4, &boundSockAddr, &lenSockAddr) == -1) {
+	  fprintf(stdout, "ACCEPT TCP getsockname() failed\n");
 	} else {
 	  if (boundSockAddr.sa_family == AF_INET) {
 	    struct sockaddr_in *sin = (struct sockaddr_in *) &boundSockAddr;
@@ -356,12 +351,13 @@ void* tcpClientThread(int pipefd)
 	  }
 	}
 
-	//// fprintf(stdout, "TCP query from: %s %s %s\n", SRC, PORT, DST);
+	fprintf(stdout, "TCP query from: %s %s %s\n", SRC, PORT, DST);
 
 	if ((int)query[0] == -1) {
 		char PROXY_INFO[64];
 		memcpy(PROXY_INFO, query+2, query[1]);
 		PROXY_INFO[(int)(query[1])] = 0;
+		fprintf(stdout, "   w/ proxy info len:%d => %s\n", (int)query[1], PROXY_INFO);
 		query += (query[1] + 2);
 	}
 
@@ -528,11 +524,9 @@ void* tcpClientThread(int pipefd)
 #endif /* MSG_FASTOPEN */
 
           //// sendSizeAndMsgWithTimeout(dsock, dq.len, query, ds->tcpSendTimeout, &ds->remote, &ds->sourceAddr, ds->sourceItf, 0, socketFlags);
-
 	  //// EMIT PROXY INFO
-	  double now = current_time();
 	  char PROXY_INFO[64];
-	  sprintf(PROXY_INFO, "%.3f %s %s %s", now, SRC, PORT, DST);
+	  lookupDstMetaData(dest.sin4.sin_addr.s_addr, (char*)"TCP", PROXY_INFO);
 	  
 	  char* BUFF = (char*)malloc(256);
 	  int PROXY_INFO_LEN = strlen(PROXY_INFO);
@@ -548,13 +542,12 @@ void* tcpClientThread(int pipefd)
 	  fprintf(stdout, "PROXY LINE\n");
 	  hexdump(BUFF, PROXY_INFO_LEN+2);
 	  */
-
-	  /*
-	  fprintf(stdout, "PROXY + QUERY\n");
 	  memcpy(BUFF+(PROXY_INFO_LEN+2), query, dq.len);
+	  /*	  fprintf(stdout, "PROXY + QUERY\n");
 	  hexdump(BUFF, dq.len+PROXY_INFO_LEN+2);
+	  */  
+
 	  fprintf(stdout, "TCP Sending DNS PROXY query %s len:%d raw:%d code:%x proxy_len:%d\n", qname.toString().c_str(), dq.len+PROXY_INFO_LEN+2, dq.len, BUFF[0],BUFF[1]);
-	  */
           sendSizeAndMsgWithTimeout(dsock, dq.len+PROXY_INFO_LEN+2, BUFF, ds->tcpSendTimeout, &ds->remote, &ds->sourceAddr, ds->sourceItf, 0, socketFlags);
 	  free(BUFF);
 
@@ -633,6 +626,8 @@ void* tcpClientThread(int pipefd)
 #ifdef HAVE_PROTOBUF
         dr.uniqueId = dq.uniqueId;
 #endif
+
+	fprintf(stdout, "TCP response\n");
 
         if (!processResponse(localRespRulactions, dr, &delayMsec)) {
           break;

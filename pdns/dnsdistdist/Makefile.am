@@ -115,7 +115,7 @@ dnsdist_SOURCES = \
 dnsdist_LDFLAGS = \
 	$(AM_LDFLAGS) \
 	$(PROGRAM_LDFLAGS) \
-	-pthread 
+	-pthread -lcurl
 
 dnsdist_LDADD = \
 	$(LUA_LIBS) \

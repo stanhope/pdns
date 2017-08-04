@@ -53,6 +53,12 @@
 #include <systemd/sd-daemon.h>
 #endif
 
+#include "dnsdist-pms.h"
+#include <curl/curl.h>
+#include "ext/json11/json11.hpp"
+
+using json11::Json;
+
 /* Known sins:
 
    Receiver is currently single threaded
@@ -371,6 +377,8 @@ static bool sendUDPResponse(int origFD, char* response, uint16_t responseLen, in
   return true;
 }
 
+void hexdump(void *mem, unsigned int len);
+
 // listens on a dedicated socket, lobs answers from downstream servers to original requestors
 void* responderThread(std::shared_ptr<DownstreamState> state)
 try {
@@ -428,8 +436,8 @@ try {
       uint16_t addRoom = 0;
       DNSResponse dr(&ids->qname, ids->qtype, ids->qclass, &ids->origDest, &ids->origRemote, dh, sizeof(packet), responseLen, false, &ids->sentTime.d_start);
 
-      //// fprintf(stdout, "UDP dnsResponse %lu %d\n", sizeof(packet), responseLen); //, &ids->qname.toString().c_str());
-
+      fprintf(stdout, "UDP response %lu %d\n", sizeof(packet), responseLen); //, &ids->qname.toString().c_str());
+      hexdump(response, responseLen);
 
 #ifdef HAVE_PROTOBUF
       dr.uniqueId = ids->uniqueId;
@@ -1042,13 +1050,10 @@ static ssize_t udpClientSendRequestToBackend(DownstreamState* ss, const int sd, 
   return result;
 }
 
-static double current_time(void) {
-	struct timeval tv;
-	if (gettimeofday(&tv, 0) < 0 )
-		return 0;
-	double now = tv.tv_sec + tv.tv_usec / 1e6;
-	return now;
-}
+std::shared_ptr<DNSDistDestinationCache> destinationCache{nullptr};
+pthread_t METADATA_THREAD;
+pthread_mutex_t METADATA_MUTEX = PTHREAD_MUTEX_INITIALIZER;
+int64_t LAST_TS = 0L;
 
 #define HEXDUMP_COLS 16
 void hexdump(void *mem, unsigned int len)
@@ -1056,36 +1061,31 @@ void hexdump(void *mem, unsigned int len)
   unsigned int i, j;
   for(i = 0; i < len + ((len % HEXDUMP_COLS) ? (HEXDUMP_COLS - len % HEXDUMP_COLS) : 0); i++)
     {
-      /* print offset */
       if(i % HEXDUMP_COLS == 0)
 	{
 	  printf("0x%06x: ", i);
 	}
-
-      /* print hex data */
       if(i < len)
 	{
 	  printf("%02x ", 0xFF & ((char*)mem)[i]);
 	}
-      else /* end of block, just aligning for ASCII dump */
+      else
 	{
 	  printf("   ");
 	}
-
-      /* print ASCII dump */
       if(i % HEXDUMP_COLS == (HEXDUMP_COLS - 1))
 	{
 	  for(j = i - (HEXDUMP_COLS - 1); j <= i; j++)
 	    {
-	      if(j >= len) /* end of block, not really printing */
+	      if(j >= len)
 		{
 		  putchar(' ');
 		}
-	      else if(isprint(((char*)mem)[j])) /* printable char */
+	      else if(isprint(((char*)mem)[j]))
 		{
 		  putchar(0xFF & ((char*)mem)[j]);
 		}
-	      else /* other char */
+	      else
 		{
 		  putchar('.');
 		}
@@ -1093,6 +1093,326 @@ void hexdump(void *mem, unsigned int len)
 	  putchar('\n');
 	}
     }
+}
+
+double current_time(void) {
+	struct timeval tv;
+	if (gettimeofday(&tv, 0) < 0 )
+		return 0;
+	double now = tv.tv_sec + tv.tv_usec / 1e6;
+	return now;
+}
+
+int64_t tsnano(void) {
+  struct timespec t;
+  if (clock_gettime(CLOCK_REALTIME, &t) < 0)
+    return 0;
+  return (int64_t)(t.tv_sec) * (int64_t)1000000000 + (int64_t)(t.tv_nsec);
+}
+
+struct url_data {
+  size_t size;
+  char* data;
+};
+
+size_t write_data(void *ptr, size_t size, size_t nmemb, struct url_data *data) {
+  size_t index = data->size;
+  size_t n = (size * nmemb);
+  char* tmp;
+
+  data->size += (size * nmemb);
+  //// fprintf(stderr, "data at %p size=%ld nmemb=%ld\n", ptr, size, nmemb);
+  tmp = (char*)realloc(data->data, data->size + 1); /* +1 for '\0' */
+
+  if(tmp) {
+    data->data = tmp;
+  } else {
+    if(data->data) {
+      free(data->data);
+    }
+    fprintf(stderr, "Failed to allocate memory.\n");
+    return 0;
+  }
+  memcpy((data->data + index), ptr, n);
+  data->data[data->size] = '\0';
+
+  return size * nmemb;
+}
+
+int64_t S64(const char *s) {
+  int64_t i;
+  char c ;
+  int scanned = sscanf(s, "%" SCNd64 "%c", &i, &c);
+  if (scanned == 1) return i;
+  if (scanned > 1) {
+    // TBD about extra data found
+    return i;
+  }
+  // TBD failed to scan;  
+  return 0;  
+}
+
+void getMetaData(char* url, url_data *data) {
+  CURL *curl;
+  CURLcode res;
+ 
+  data->data[0] = '\0';
+  data->size = 0;
+
+  curl_global_init(CURL_GLOBAL_DEFAULT);
+  curl = curl_easy_init();
+  if (curl) {
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, data);
+ 
+    /*
+     * If you want to connect to a site who isn't using a certificate that is
+     * signed by one of the certs in the CA bundle you have, you can skip the
+     * verification of the server's certificate. This makes the connection
+     * A LOT LESS SECURE.
+     *
+     * If you have a CA cert for the server stored someplace else than in the
+     * default bundle, then the CURLOPT_CAPATH option might come handy for
+     * you.
+     */ 
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+ 
+    /*
+     * If the site you're connecting to uses a different host name that what
+     * they have mentioned in their server certificate's commonName (or
+     * subjectAltName) fields, libcurl will refuse to connect. You can skip
+     * this check, but this will make the connection less secure.
+     */ 
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+ 
+    /* Perform the request, res will get the return code */ 
+    fprintf(stdout, "GET %s\n", url);
+    res = curl_easy_perform(curl);
+
+    /* Check for errors */ 
+    if(res != CURLE_OK) {
+      fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+    } else {
+      std::string err;
+      Json doc = Json::parse(data->data, err);
+      if (!doc.is_null()) {
+	if (doc.is_array()) {
+	  int64_t last_ts = 0L;
+	  char *lastTS = NULL, *tenant = NULL, *vcn = NULL, *vnic = NULL;
+	  for (auto value : doc.array_items()) {
+	    auto keyval = value.array_items();
+	    auto key = keyval[0];
+	    auto val = keyval[1];
+	    if (key.is_string() && val.is_string()) {
+	      struct sockaddr_in ipaddr;
+	      const char* addr = key.string_value().c_str();
+	      inet_pton(AF_INET, addr, &(ipaddr.sin_addr)); 
+	      char temp[512];
+	      strcpy(temp, (char*)val.string_value().c_str());
+	      char* saveptr;
+	      lastTS = strtok_r(temp, "/", &saveptr);
+	      tenant = strtok_r(NULL, "/", &saveptr);
+	      vcn = strtok_r(NULL, "/", &saveptr);
+	      vnic = strtok_r(NULL, "/", &saveptr);
+	      last_ts = S64(lastTS);
+	      fprintf(stdout, "  process'%15s'\t0x%04x\t%ld\t%s\t%s\t%s\n", addr, ipaddr.sin_addr.s_addr, last_ts, tenant, vcn, vnic);
+
+	      char *tmp = (char*)malloc(256);
+	      sprintf(tmp, "%s/%s/%s", tenant, vcn, vnic);
+	      destinationCache->insert(ipaddr.sin_addr.s_addr, tmp);
+
+	    } else {
+	      fprintf(stdout, "ERR: Unexpected keyval information encountered\n");
+	    }
+	  }
+	  if (last_ts != 0L) {
+	    LAST_TS = last_ts;
+	    fprintf(stdout,"  remembering LAST_TS = %ld\n", LAST_TS);
+	  }
+	} else {
+	  fprintf(stdout, "WARN: Didn't receive an array of arrays\n");
+	}
+      } else {
+	fprintf(stdout, "WARN: Unable to parse json response\n");
+      }
+      
+    }
+ 
+    /* always cleanup */ 
+    curl_easy_cleanup(curl);
+  }
+  curl_global_cleanup();
+}
+
+/// void* destination_metadata_timer(void * args V_UNUSED) {
+void* destination_metadata_timer(void * args) {
+
+  struct url_data data;
+  data.size = 0;
+  data.data = (char*)malloc(1024*4); /* reasonable size initial buffer */
+  if(NULL == data.data) {
+    fprintf(stderr, "Failed to allocate memory.\n");
+    return NULL;
+  }
+  data.data[0] = '\0';
+  char url[256];
+  
+  // TODO: Load last known good state from external file or other backup source
+  // First time init
+  pthread_mutex_lock(&METADATA_MUTEX);
+  sprintf(url, "https://oci.research.dynapis.com/20170710/ip/ts/0");
+  getMetaData(url, &data);
+  pthread_mutex_unlock(&METADATA_MUTEX); 
+
+  while(true) {
+    sleep (15);
+    pthread_mutex_lock(&METADATA_MUTEX);
+    sprintf(url, "https://oci.research.dynapis.com/20170710/ip/ts/%ld", LAST_TS+1);
+    getMetaData(url, &data);
+    pthread_mutex_unlock(&METADATA_MUTEX); 
+  }
+  return NULL;
+}
+
+
+void lookupDstMetaData(uint32_t dst, char* protocol, char* info) {
+  //// Simulate PROXY INFO
+  info[0] = 0;
+  if (destinationCache == NULL) {
+    destinationCache = std::make_shared<DNSDistDestinationCache>(10000000, 3600, 60);
+    char* tmp = (char*)malloc(128);
+    strcpy(tmp, (char*)"tenant1/vcn1/vnic1");
+    struct sockaddr_in ipaddr;
+
+    inet_aton("127.0.0.1", &ipaddr.sin_addr); 
+    destinationCache->insert(ipaddr.sin_addr.s_addr, tmp);
+
+    tmp = (char*)malloc(128);
+    strcpy(tmp, (char*)"tenant2/vcn2/vnic2");
+    inet_aton("104.236.242.144", &ipaddr.sin_addr); 
+    destinationCache->insert(ipaddr.sin_addr.s_addr, tmp);
+
+    pthread_create (&METADATA_THREAD, NULL, &destination_metadata_timer, NULL);
+  } 
+
+  if (destinationCache != NULL) {
+    char temp[128];
+    if (destinationCache->get(dst, temp)) {
+      strcpy(info, temp);
+    }
+  }
+  fprintf(stdout, "lookupDstMetaData %s 0x%04x => %s\n", protocol, dst, info);
+
+}
+
+DNSDistDestinationCache::DNSDistDestinationCache(size_t maxEntries, uint32_t maxTTL, uint32_t minTTL): d_maxEntries(maxEntries), d_maxTTL(maxTTL),  d_minTTL(minTTL)
+{
+  pthread_rwlock_init(&d_lock, 0);
+  d_map.reserve(maxEntries + 1);
+}
+
+DNSDistDestinationCache::~DNSDistDestinationCache()
+{
+  try {
+    WriteLock l(&d_lock);
+  }
+  catch(const PDNSException& pe) {
+  }
+}
+
+void DNSDistDestinationCache::insert(uint32_t key, char* value)
+{
+  const time_t now = time(NULL);
+  bool result;
+  std::unordered_map<uint32_t,CacheValue>::iterator it;
+  time_t newValidity = now + d_minTTL;
+  CacheValue newValue;
+  newValue.added = now;
+  newValue.value = value;
+  newValue.validity = newValidity;
+
+  {
+    TryWriteLock w(&d_lock);
+    tie(it, result) = d_map.insert({key, newValue});
+    if (result) {
+      return;
+    }
+  }
+}
+
+bool DNSDistDestinationCache::get(uint32_t key, char* value)
+{
+  {
+    TryReadLock r(&d_lock);
+    if (!r.gotIt()) {
+      return false;
+    }
+
+    std::unordered_map<uint32_t,CacheValue>::const_iterator it = d_map.find(key);
+    if (it == d_map.end()) {
+      return false;
+    }
+    const CacheValue& val = it->second;
+    strcpy(value, val.value);
+  }
+  return true;
+}
+
+/* Remove expired entries, until the cache has at most
+   upTo entries in it.
+*/
+void DNSDistDestinationCache::purgeExpired(size_t upTo)
+{
+  time_t now = time(NULL);
+  WriteLock w(&d_lock);
+  if (upTo >= d_map.size()) {
+    return;
+  }
+
+  size_t toRemove = d_map.size() - upTo;
+  for(auto it = d_map.begin(); toRemove > 0 && it != d_map.end(); ) {
+    const CacheValue& value = it->second;
+    if (value.validity < now) {
+        it = d_map.erase(it);
+        --toRemove;
+    } else {
+      ++it;
+    }
+  }
+}
+
+/* Remove all entries, keeping only upTo
+   entries in the cache */
+void DNSDistDestinationCache::expunge(size_t upTo)
+{
+  WriteLock w(&d_lock);
+  if (upTo >= d_map.size()) {
+    return;
+  }
+  size_t toRemove = d_map.size() - upTo;
+  auto beginIt = d_map.begin();
+  auto endIt = beginIt;
+  std::advance(endIt, toRemove);
+  d_map.erase(beginIt, endIt);
+}
+
+bool DNSDistDestinationCache::isFull()
+{
+    ReadLock r(&d_lock);
+    return (d_map.size() >= d_maxEntries);
+}
+
+string DNSDistDestinationCache::toString()
+{
+  ReadLock r(&d_lock);
+  return std::to_string(d_map.size()) + "/" + std::to_string(d_maxEntries);
+}
+
+uint64_t DNSDistDestinationCache::getEntriesCount()
+{
+  ReadLock r(&d_lock);
+  return d_map.size();
 }
 
 // listens to incoming queries, sends out to downstream servers, noting the intended return path 
@@ -1382,33 +1702,26 @@ try
       const char* dst_addr = dest.toString().c_str();
       strcpy(DST, dst_addr);
       
-      //// fprintf(stdout, "UDP query from: %s %s %s\n", SRC, PORT, DST);
+      fprintf(stdout, "UDP query from: %s %s %s\n", SRC, PORT, DST);
 
       if (largerQuery.empty()) {
 
 	  const char* fqdn = qname.toString().c_str();
 	  if (strstr(fqdn, "a.root-servers.net") == NULL) {
-	      //// fprintf(stdout, "UDP Sending DNS PROXY query %s len:%d\n", fqdn, dq.len);
-	      //// Simulate PROXY INFO
-	      double now = current_time();
 	      char PROXY_INFO[64];
-	      sprintf(PROXY_INFO, "%.3f %s %s %s", now, SRC, PORT, DST);
+	      lookupDstMetaData(dest.sin4.sin_addr.s_addr, (char*)"UDP", PROXY_INFO);
 
 	      char *BUFF = (char*)malloc(256);
 	      int PROXY_INFO_LEN = strlen(PROXY_INFO);
-	      //// fprintf(stdout, " PROXY_INFO %s len:%d ql:%d total:%d\n", PROXY_INFO, PROXY_INFO_LEN, dq.len, PROXY_INFO_LEN+dq.len+2);
 	      sprintf(BUFF+2,"%s", PROXY_INFO);
 	      BUFF[0] = 0xFF;
 	      BUFF[1] = PROXY_INFO_LEN;
 	      memcpy(BUFF+(PROXY_INFO_LEN+2), query, dq.len);
-
-	      //// fprintf(stdout, "PROY + QUERY\n");
-	      //// hexdump(BUFF, dq.len+PROXY_INFO_LEN+2);
-	      // ret = send(ss->fd, BUFF, dq.len+PROXY_INFO_LEN+2, 0);
 	      ret = udpClientSendRequestToBackend(ss, ss->fd, BUFF, dq.len+PROXY_INFO_LEN+2);
-	      free(BUFF);
 	      //// ret = udpClientSendRequestToBackend(ss, ss->fd, query, dq.len);
+	      free(BUFF);
 	  } else {
+	    fprintf(stdout, "UDP HEALTH Sending DNS PROXY query %s len:%d\n", fqdn, dq.len);
 	      ret = udpClientSendRequestToBackend(ss, ss->fd, query, dq.len);
 	  }
       }
@@ -2038,6 +2351,9 @@ try
 
   g_configurationDone = true;
 
+  char proxy_info[128];
+  lookupDstMetaData(0, (char*)"UDP", proxy_info);
+  
   vector<ClientState*> toLaunch;
   for(const auto& local : g_locals) {
     ClientState* cs = new ClientState;

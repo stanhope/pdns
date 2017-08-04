@@ -309,7 +309,12 @@ struct DistributorFatal{};
 
 template<class Answer, class Question, class Backend>int MultiThreadDistributor<Answer,Question,Backend>::question(Question* q, callback_t callback)
 {
+  Question *orig = q;
   q=new Question(*q);
+  if (orig->d_proxyLen > 0) {
+	  q->d_proxyLen = orig->d_proxyLen;
+	  memcpy(q->proxyInfo, orig->proxyInfo, orig->d_proxyLen);
+  }
 
   // this is passed to other process over pipe and released there
   auto QD=new QuestionData();

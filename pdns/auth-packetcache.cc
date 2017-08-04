@@ -26,6 +26,7 @@
 #include "logger.hh"
 #include "statbag.hh"
 #include "cachecleaner.hh"
+
 extern StatBag S;
 
 const unsigned int AuthPacketCache::s_mincleaninterval, AuthPacketCache::s_maxcleaninterval;
@@ -72,7 +73,7 @@ bool AuthPacketCache::get(DNSPacket *p, DNSPacket *cached)
     return false;
   }
 
-  uint32_t hash = canHashPacket(p->getString(), false);
+  uint32_t hash = canHashPacket(p->getString(), p->proxyInfo, false);
   p->setHash(hash);
 
   string value;

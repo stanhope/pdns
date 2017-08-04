@@ -57,6 +57,7 @@ GSQLBackend::GSQLBackend(const string &mode, const string &suffix)
   d_IdQuery=getArg("id-query");
   d_ANYNoIdQuery=getArg("any-query");
   d_ANYIdQuery=getArg("any-id-query");
+  d_TenantANYIdQuery=getArg("tenant-any-id-query");
 
   d_listQuery=getArg("list-query");
   d_listSubZoneQuery=getArg("list-subzone-query");
@@ -1025,15 +1026,29 @@ bool GSQLBackend::setDomainMetadata(const DNSName& name, const std::string& kind
 void GSQLBackend::lookup(const QType &qtype,const DNSName &qname, DNSPacket *pkt_p, int domain_id)
 {
   try {
+
+    char *tenant = NULL, *vcn = NULL, *vnic = NULL;
+    if (pkt_p != NULL && pkt_p->d_proxyLen > 0) {
+      // crack proxy info
+      char temp[128];
+      strcpy(temp, (char*)pkt_p->proxyInfo);
+      char* saveptr;
+      tenant = strtok_r(temp, "/", &saveptr);
+      vcn = strtok_r(NULL, "/", &saveptr);
+      vnic = strtok_r(NULL, "/", &saveptr);
+    }
+    // fprintf(stdout, "lookup %s %s domain=%d tenant=%s\n", qname.toString().c_str(), qtype.getName().c_str(), domain_id, tenant);
+
     reconnectIfNeeded();
 
-    if(qtype.getCode()!=QType::ANY) {
+    if (qtype.getCode()!=QType::ANY) {
+
       if(domain_id < 0) {
-        d_query_name = "basic-query";
-        d_query_stmt = d_NoIdQuery_stmt;
-        d_query_stmt->
-          bind("qtype", qtype.getName())->
-          bind("qname", qname);
+	  d_query_name = "basic-query";
+	  d_query_stmt = d_NoIdQuery_stmt;
+	  d_query_stmt->
+	      bind("qtype", qtype.getName())->
+	      bind("qname", qname);
       } else {
         d_query_name = "id-query";
         d_query_stmt = d_IdQuery_stmt;
@@ -1050,14 +1065,23 @@ void GSQLBackend::lookup(const QType &qtype,const DNSName &qname, DNSPacket *pkt
         d_query_stmt->
           bind("qname", qname);
       } else {
-        d_query_name = "any-id-query";
-        d_query_stmt = d_ANYIdQuery_stmt;
-        d_query_stmt->
-          bind("qname", qname)->
-          bind("domain_id", domain_id);
+	if (domain_id == 1 && pkt_p != NULL && pkt_p->d_proxyLen > 0) {
+	  d_query_name = "tenant-any-id-query";
+	  const std::string& tenant_id(tenant);
+	  d_query_stmt = d_TenantANYIdQuery_stmt;
+	  d_query_stmt->
+	    bind("qname", qname)->
+	    bind("tenant", tenant_id)->
+	    bind("domain_id", domain_id);
+	} else {
+	  d_query_name = "any-id-query";
+	  d_query_stmt = d_ANYIdQuery_stmt;
+	  d_query_stmt->
+	    bind("qname", qname)->
+	    bind("domain_id", domain_id);
+	}
       }
     }
-
     d_query_stmt->
       execute();
   }

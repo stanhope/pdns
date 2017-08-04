@@ -171,6 +171,11 @@ public:
 
   static bool s_doEDNSSubnetProcessing;
   static uint16_t s_udpTruncationThreshold; //2
+
+  bool d_hasProxy;
+  int d_proxyLen;
+  char proxyInfo[128];
+
 private:
   void pasteQ(const char *question, int length); //!< set the question of this packet, useful for crafting replies
 

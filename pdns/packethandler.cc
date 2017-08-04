@@ -1316,15 +1316,18 @@ DNSPacket *PacketHandler::doQuestion(DNSPacket *p)
     weDone = weRedirected = weHaveUnauth =  false;
     
     while(B.get(rr)) {
-      //cerr<<"got content: ["<<rr.content<<"]"<<endl;
+      // cerr<<"got content: ["<<rr.content<<"]"<<endl;
       if (p->qtype.getCode() == QType::ANY && !p->d_dnssecOk && (rr.dr.d_type == QType:: DNSKEY || rr.dr.d_type == QType::NSEC3PARAM))
         continue; // Don't send dnssec info to non validating resolvers.
       if (rr.dr.d_type == QType::RRSIG) // RRSIGS are added later any way.
         continue; // TODO: this actually means addRRSig should check if the RRSig is already there
 
       // cerr<<"Auth: "<<rr.auth<<", "<<(rr.dr.d_type == p->qtype)<<", "<<rr.dr.d_type.getName()<<endl;
-      if((p->qtype.getCode() == QType::ANY || rr.dr.d_type == p->qtype.getCode()) && rr.auth) 
-        weDone=1;
+      if (p->qtype.getCode() == QType::ANY || rr.dr.d_type == p->qtype.getCode()) {
+	if (rr.auth) {
+	  weDone=1;
+	}
+      }
       // the line below fakes 'unauth NS' for delegations for non-DNSSEC backends.
       if((rr.dr.d_type == p->qtype.getCode() && !rr.auth) || (rr.dr.d_type == QType::NS && (!rr.auth || !(sd.qname==rr.dr.d_name))))
         weHaveUnauth=1;
@@ -1359,7 +1362,8 @@ DNSPacket *PacketHandler::doQuestion(DNSPacket *p)
     }
 
 
-    DLOG(L<<"After first ANY query for '"<<target<<"', id="<<sd.domain_id<<": weDone="<<weDone<<", weHaveUnauth="<<weHaveUnauth<<", weRedirected="<<weRedirected<<", haveAlias='"<<haveAlias<<"'"<<endl);
+    //// DLOG(L<<"After first ANY query for '"<<target<<"', id="<<sd.domain_id<<": weDone="<<weDone<<", weHaveUnauth="<<weHaveUnauth<<", weRedirected="<<weRedirected<<", haveAlias='"<<haveAlias<<"'"<<endl);
+    L<<"After first ANY query for '"<<target<<"', id="<<sd.domain_id<<": weDone="<<weDone<<", weHaveUnauth="<<weHaveUnauth<<", weRedirected="<<weRedirected<<", haveAlias='"<<haveAlias<<"'"<<endl;
     if(p->qtype.getCode() == QType::DS && weHaveUnauth &&  !weDone && !weRedirected && d_dk.isSecuredZone(sd.qname)) {
       DLOG(L<<"Q for DS of a name for which we do have NS, but for which we don't have on a zone with DNSSEC need to provide an AUTH answer that proves we don't"<<endl);
       makeNOError(p, r, target, DNSName(), sd, 1);
